@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">WattKit</string>
+    <string name="vpn_channel_name">WattKit VPN Service</string>
+    <string name="vpn_channel_desc">Active acceleration notification</string>
+</resources>
