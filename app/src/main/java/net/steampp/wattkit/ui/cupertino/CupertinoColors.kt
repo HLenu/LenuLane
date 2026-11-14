@@ -3,46 +3,51 @@ package net.steampp.wattkit.ui.cupertino
 import androidx.compose.ui.graphics.Color
 
 object CupertinoColors {
-    // iOS Standard Dark System Colors
-    val systemBackground = Color(0xFF000000)
-    val secondarySystemBackground = Color(0xFF1C1C1E)
-    val tertiarySystemBackground = Color(0xFF2C2C2E)
+    // iOS Standard Light System Colors (白色底子)
+    val systemBackground = Color(0xFFFFFFFF) // Pure White
+    val secondarySystemBackground = Color(0xFFF2F2F7) // iOS Standard Light Gray
+    val tertiarySystemBackground = Color(0xFFFFFFFF)
 
-    val systemGroupedBackground = Color(0xFF000000)
-    val secondarySystemGroupedBackground = Color(0xFF1C1C1E)
-    val tertiarySystemGroupedBackground = Color(0xFF2C2C2E)
+    val systemGroupedBackground = Color(0xFFF2F2F7) // iOS Grouped Background (#F2F2F7)
+    val secondarySystemGroupedBackground = Color(0xFFFFFFFF) // Crisp White Grouped Containers
+    val tertiarySystemGroupedBackground = Color(0xFFE5E5EA)
 
     // iOS Accent Palette
-    val systemBlue = Color(0xFF0A84FF)
-    val systemGreen = Color(0xFF30D158) // Official iOS Switch On color
-    val systemIndigo = Color(0xFF5E5CE6)
-    val systemOrange = Color(0xFFFF9F0A)
-    val systemPink = Color(0xFFFF375F)
-    val systemPurple = Color(0xFFBF5AF2)
-    val systemRed = Color(0xFFFF453A)
-    val systemTeal = Color(0xFF64D2FF)
-    val systemYellow = Color(0xFFFFD60A)
+    val systemBlue = Color(0xFF007AFF) // Official iOS Blue
+    val systemGreen = Color(0xFF34C759) // Official iOS Green
+    val systemIndigo = Color(0xFF5856D6)
+    val systemOrange = Color(0xFFFF9500)
+    val systemPink = Color(0xFFFF2D55)
+    val systemPurple = Color(0xFFAF52DE)
+    val systemRed = Color(0xFFFF3B30)
+    val systemTeal = Color(0xFF30B0C7)
+    val systemYellow = Color(0xFFFFCC00)
+    val systemMint = Color(0xFF00C7BE)
+    val activeMint = Color(0xFF10B981)
 
     // iOS Grayscale
     val systemGray = Color(0xFF8E8E93)
-    val systemGray2 = Color(0xFF636366)
-    val systemGray3 = Color(0xFF48484A)
-    val systemGray4 = Color(0xFF3A3A3C)
-    val systemGray5 = Color(0xFF2C2C2E)
-    val systemGray6 = Color(0xFF1C1C1E)
+    val systemGray2 = Color(0xFFAEAEB2)
+    val systemGray3 = Color(0xFFC7C7CC)
+    val systemGray4 = Color(0xFFD1D1D6)
+    val systemGray5 = Color(0xFFE5E5EA)
+    val systemGray6 = Color(0xFFF2F2F7)
 
     // Label & Content Hierarchy
-    val label = Color(0xFFFFFFFF)
-    val secondaryLabel = Color(0x99EBEBF5)
-    val tertiaryLabel = Color(0x4DEBEBF5)
-    val quaternaryLabel = Color(0x2EEBEBF5)
+    val label = Color(0xFF000000) // Deep Crisp Black
+    val secondaryLabel = Color(0xFF6C6C70) // Neutral iOS Secondary Gray
+    val tertiaryLabel = Color(0xFF8E8E93)
+    val quaternaryLabel = Color(0xFFC7C7CC)
 
     // Apple 0.5dp Retinal Separator
-    val separator = Color(0x54545899)
-    val opaqueSeparator = Color(0xFF38383A)
+    val separator = Color(0x293C3C43) // #E5E5EA / light divider
+    val opaqueSeparator = Color(0xFFC6C6C8)
 
-    // Liquid Glass / Apple Music Translucency
-    val liquidGlassBar = Color(0xE6141416) // 90% blur-capable background
-    val liquidGlassBorder = Color(0x33FFFFFF) // Subtle specular light edge
-    val liquidGlassCard = Color(0xB31C1C1E) // 70% card translucency
+    // Tertiary Fill (Search Bar background)
+    val tertiarySystemFill = Color(0x14767680)
+
+    // Liquid Glass / Apple Music Translucency (Light Mode)
+    val liquidGlassBar = Color(0xF2FFFFFF) // 95% Translucent Frosty White
+    val liquidGlassBorder = Color(0x1F000000) // Subtle Soft Border
+    val liquidGlassCard = Color(0xFAFFFFFF)
 }

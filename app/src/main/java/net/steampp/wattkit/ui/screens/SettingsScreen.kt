@@ -130,7 +130,7 @@ fun SettingsScreen() {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(CupertinoColors.systemBackground)
+            .background(CupertinoColors.systemGroupedBackground)
             .padding(horizontal = 16.dp)
     ) {
         item {
@@ -239,34 +239,8 @@ fun SettingsScreen() {
         item {
             CupertinoSection(
                 title = "实用工具箱",
-                footer = "集成本地常用网络维护与游戏辅助能力。"
+                footer = "一键排查系统 Hosts 污染，保障本地免证书反向代理环境纯净。"
             ) {
-                CupertinoCell(
-                    title = "Steam 喜加一自动入库",
-                    subtitle = "全自动追踪并领取全球限免游戏 (规划中)",
-                    icon = Icons.Default.CardGiftcard,
-                    iconBackgroundColor = CupertinoColors.systemPink,
-                    trailingContent = {
-                        Text(
-                            text = "即将来临",
-                            fontSize = 12.sp,
-                            color = CupertinoColors.secondaryLabel
-                        )
-                    }
-                )
-                CupertinoCell(
-                    title = "云存档备份与同步",
-                    subtitle = "本地游戏存档 WebDAV 双向备份",
-                    icon = Icons.Default.CloudSync,
-                    iconBackgroundColor = CupertinoColors.systemIndigo,
-                    trailingContent = {
-                        Text(
-                            text = "即将来临",
-                            fontSize = 12.sp,
-                            color = CupertinoColors.secondaryLabel
-                        )
-                    }
-                )
                 CupertinoCell(
                     title = "本地 Hosts 冲突净化",
                     subtitle = "一键清理历史冲突与污染条目",

@@ -284,15 +284,6 @@ fun CupertinoSearchField(
     }
 }
 
-val CupertinoColors.tertiarySystemFill: Color
-    get() = Color(0x3D767680)
-
-val CupertinoColors.systemMint: Color
-    get() = Color(0xFF63E6E2)
-
-val CupertinoColors.activeMint: Color
-    get() = Color(0xFF34D399)
-
 /**
  * Standard iOS Large Title Page Header
  */

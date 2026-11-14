@@ -54,7 +54,7 @@ fun AccelerationScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(CupertinoColors.systemBackground)
+            .background(CupertinoColors.systemGroupedBackground)
             .padding(horizontal = 16.dp)
     ) {
         item {

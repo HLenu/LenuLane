@@ -2,7 +2,9 @@ package net.steampp.wattkit.ui.screens
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -14,7 +16,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -22,14 +23,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import net.steampp.wattkit.proxy.RuleManager
 import net.steampp.wattkit.ui.cupertino.CupertinoColors
+import net.steampp.wattkit.ui.cupertino.CupertinoPageHeader
 import net.steampp.wattkit.vpn.WattVpnService
 
 @Composable
@@ -68,121 +72,67 @@ fun HomeScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(CupertinoColors.systemBackground)
+            .background(CupertinoColors.systemGroupedBackground)
             .padding(horizontal = 16.dp)
     ) {
         item {
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // 1. iOS Top Navigation Bar (Menu + Title + Actions)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                IconButton(
-                    onClick = { onNavigateToTab(3) },
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(CupertinoColors.secondarySystemBackground)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Menu,
-                        contentDescription = "菜单",
-                        tint = CupertinoColors.label,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                Text(
-                    text = "WATT TOOLKIT",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = CupertinoColors.secondaryLabel,
-                    letterSpacing = 1.2.sp
-                )
-
-                Row {
-                    IconButton(
-                        onClick = { onNavigateToTab(1) },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(CupertinoColors.secondarySystemBackground)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = "编辑规则",
-                            tint = CupertinoColors.label,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    IconButton(
-                        onClick = { onNavigateToTab(3) },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(CupertinoColors.secondarySystemBackground)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.MoreVert,
-                            contentDescription = "更多",
-                            tint = CupertinoColors.label,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 2. iOS Large Title: "概览"
-            Text(
-                text = "概览",
-                fontSize = 34.sp,
-                fontWeight = FontWeight.Bold,
-                color = CupertinoColors.label,
-                modifier = Modifier.padding(bottom = 14.dp)
+            // iOS Standard Large Title Header (Clean, no redundant cluttered buttons)
+            CupertinoPageHeader(
+                title = "概览",
+                subtitle = if (isVpnRunning) "网络加速隧道活跃中 · 16KB tun2socks" else "WattKit 游戏网络工具箱"
             )
+            Spacer(modifier = Modifier.height(10.dp))
+        }
 
-            // 3. Apple Health Style Hero Service Card
+        // Apple Health Style Master Service Card in Light Mode
+        item {
             Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = Color(0xFF162130),
+                shape = RoundedCornerShape(20.dp),
+                color = CupertinoColors.secondarySystemGroupedBackground,
+                border = BorderStroke(0.5.dp, Color(0x1F000000)),
+                shadowElevation = 2.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(22.dp)
+                        .padding(20.dp)
                 ) {
-                    // Status Header Line
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = if (isVpnRunning) Icons.Default.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
-                            contentDescription = null,
-                            tint = if (isVpnRunning) Color(0xFF34D399) else CupertinoColors.secondaryLabel,
-                            modifier = Modifier.size(18.dp)
+                    // Status Header Badge
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(
+                                if (isVpnRunning) Color(0xFFE8F5E9) else Color(0xFFF2F2F7)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isVpnRunning) CupertinoColors.systemGreen else CupertinoColors.systemGray
+                                )
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isVpnRunning) "网络加速 · 已连接" else "网络加速 · 未开启",
-                            fontSize = 14.sp,
+                            text = if (isVpnRunning) "网络加速 · 已连接" else "网络加速 · 未启动",
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (isVpnRunning) Color(0xFF34D399) else CupertinoColors.secondaryLabel
+                            color = if (isVpnRunning) Color(0xFF1B5E20) else CupertinoColors.secondaryLabel
                         )
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Big Bold Status
+                    // Large Status Title
                     Text(
-                        text = if (isVpnRunning) "连接已受保护" else "连接未受保护",
-                        fontSize = 28.sp,
+                        text = if (isVpnRunning) "连接已受保护" else "连接未开启",
+                        fontSize = 26.sp,
                         fontWeight = FontWeight.Bold,
                         color = CupertinoColors.label
                     )
@@ -190,12 +140,13 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Text(
-                        text = if (isVpnRunning) "已启用 Steam 社区、GitHub 等 $enabledRuleCount 项加速规则" else "点击下方开关开启免证书透明加速分流",
+                        text = if (isVpnRunning) "已启用 Steam 社区、GitHub 等 $enabledRuleCount 项加速规则" else "点击下方开关建立本地免证书透明反代隧道",
                         fontSize = 13.sp,
-                        color = CupertinoColors.secondaryLabel
+                        color = CupertinoColors.secondaryLabel,
+                        lineHeight = 18.sp
                     )
 
-                    Spacer(modifier = Modifier.height(22.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
 
                     // Three-column Telemetry Data
                     Row(
@@ -207,8 +158,9 @@ fun HomeScreen(
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = formattedDuration,
-                                fontSize = 15.sp,
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
                                 color = CupertinoColors.label
                             )
                         }
@@ -216,9 +168,10 @@ fun HomeScreen(
                             Text(text = "下载速度", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = if (isVpnRunning) liveDownloadSpeed else "0.0 KB/s",
-                                fontSize = 15.sp,
+                                text = if (isVpnRunning) liveDownloadSpeed else "0 B/s",
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
                                 color = CupertinoColors.label
                             )
                         }
@@ -226,17 +179,18 @@ fun HomeScreen(
                             Text(text = "上传速度", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = if (isVpnRunning) liveUploadSpeed else "0.0 KB/s",
-                                fontSize = 15.sp,
+                                text = if (isVpnRunning) liveUploadSpeed else "0 B/s",
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
                                 color = CupertinoColors.label
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(22.dp))
 
-                    // Light Mint Green Master Pill Button (as in uploaded screenshot)
+                    // Master Operation Button
                     val interactionSource = remember { MutableInteractionSource() }
                     val isPressed by interactionSource.collectIsPressedAsState()
                     val buttonScale by animateFloatAsState(
@@ -246,11 +200,12 @@ fun HomeScreen(
                     )
 
                     Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = if (isVpnRunning) Color(0xFFD1FADF) else Color(0xFFE2E8F0),
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isVpnRunning) Color(0xFFE8F5E9) else CupertinoColors.systemBlue,
+                        border = if (isVpnRunning) BorderStroke(1.dp, Color(0xFFA7F3D0)) else null,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(52.dp)
+                            .height(50.dp)
                             .scale(buttonScale)
                             .clickable(
                                 interactionSource = interactionSource,
@@ -266,83 +221,86 @@ fun HomeScreen(
                             Icon(
                                 imageVector = Icons.Default.PowerSettingsNew,
                                 contentDescription = null,
-                                tint = if (isVpnRunning) Color(0xFF065F46) else Color(0xFF334155),
+                                tint = if (isVpnRunning) Color(0xFF065F46) else Color.White,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (isVpnRunning) "管理加速 (点击停止)" else "管理加速 (点击启动)",
+                                text = if (isVpnRunning) "管理加速 (点击停止)" else "开启网络加速",
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isVpnRunning) Color(0xFF065F46) else Color(0xFF1E293B)
+                                color = if (isVpnRunning) Color(0xFF065F46) else Color.White
                             )
                         }
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(24.dp))
+        }
 
-            // 4. Apple Shortcuts 2x2 Grid: "快捷功能"
+        // Section Title: "快捷功能" (Shortcuts with 100% genuine utility)
+        item {
             Text(
                 text = "快捷功能",
-                fontSize = 20.sp,
+                fontSize = 19.sp,
                 fontWeight = FontWeight.Bold,
                 color = CupertinoColors.label,
-                modifier = Modifier.padding(bottom = 12.dp)
+                modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
             )
+        }
 
-            // Row 1
+        // Shortcuts Grid: 4 Genuine, working capabilities
+        item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 ShortcutCard(
-                    title = "本地令牌",
-                    subtitle = "Steam Guard",
-                    icon = Icons.Outlined.Shield,
-                    iconColor = Color(0xFF38BDF8),
+                    title = "Steam 令牌",
+                    subtitle = "动态口令与校时",
+                    icon = Icons.Default.Security,
+                    iconBgColor = CupertinoColors.systemTeal,
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigateToTab(2) } // To Tab 2 (Authenticator)
                 )
 
                 ShortcutCard(
-                    title = "账号管理",
-                    subtitle = "多账号切换",
-                    icon = Icons.Outlined.People,
-                    iconColor = Color(0xFF818CF8),
+                    title = "网络加速",
+                    subtitle = "22 项生态规则",
+                    icon = Icons.Default.Bolt,
+                    iconBgColor = CupertinoColors.systemGreen,
                     modifier = Modifier.weight(1f),
-                    onClick = { onNavigateToTab(2) }
+                    onClick = { onNavigateToTab(1) } // To Tab 1 (Acceleration)
                 )
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Row 2
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 ShortcutCard(
-                    title = "加速服务",
-                    subtitle = "22 项规则配置",
-                    icon = Icons.Outlined.SportsEsports,
-                    iconColor = Color(0xFFF472B6),
+                    title = "连通性雷达",
+                    subtitle = "四节点实时测速",
+                    icon = Icons.Default.WifiTethering,
+                    iconBgColor = CupertinoColors.systemIndigo,
                     modifier = Modifier.weight(1f),
-                    onClick = { onNavigateToTab(1) } // To Tab 1 (Accelerate)
+                    onClick = { onNavigateToTab(3) } // To Tab 3 (Tools & Settings)
                 )
 
                 ShortcutCard(
-                    title = "工具箱",
-                    subtitle = "网络诊断与系统",
-                    icon = Icons.Outlined.Build,
-                    iconColor = Color(0xFF34D399),
+                    title = "账号管理",
+                    subtitle = "多账号与 maFile",
+                    icon = Icons.Default.People,
+                    iconBgColor = CupertinoColors.systemOrange,
                     modifier = Modifier.weight(1f),
-                    onClick = { onNavigateToTab(3) } // To Tab 3 (Tools/Settings)
+                    onClick = { onNavigateToTab(2) } // To Tab 2 (Authenticator)
                 )
             }
 
-            Spacer(modifier = Modifier.height(100.dp)) // Space for floating Liquid Glass TabBar
+            Spacer(modifier = Modifier.height(120.dp)) // Space for floating bottom dock
         }
     }
 }
@@ -352,7 +310,7 @@ fun ShortcutCard(
     title: String,
     subtitle: String,
     icon: ImageVector,
-    iconColor: Color,
+    iconBgColor: Color,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
@@ -365,10 +323,12 @@ fun ShortcutCard(
     )
 
     Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xFF162130),
+        shape = RoundedCornerShape(16.dp),
+        color = CupertinoColors.secondarySystemGroupedBackground,
+        border = BorderStroke(0.5.dp, Color(0x1F000000)),
+        shadowElevation = 1.dp,
         modifier = modifier
-            .height(118.dp)
+            .height(110.dp)
             .scale(scale)
             .clickable(
                 interactionSource = interactionSource,
@@ -379,27 +339,35 @@ fun ShortcutCard(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
+                .padding(14.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = iconColor,
-                modifier = Modifier.size(24.dp)
-            )
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(iconBgColor),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
 
             Column {
                 Text(
                     text = title,
-                    fontSize = 17.sp,
+                    fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = CupertinoColors.label
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = subtitle,
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     color = CupertinoColors.secondaryLabel
                 )
             }

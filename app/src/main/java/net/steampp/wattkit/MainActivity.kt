@@ -6,16 +6,16 @@ import android.net.VpnService
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -47,7 +48,17 @@ import net.steampp.wattkit.vpn.WattVpnService
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // iOS Default Light Mode: white background with dark status bar icons
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            ),
+            navigationBarStyle = SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT
+            )
+        )
         setContent {
             WattKitCupertinoApp()
         }
@@ -95,13 +106,34 @@ fun WattKitCupertinoApp() {
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(CupertinoColors.systemGroupedBackground)
             .statusBarsPadding()
     ) {
-        // Main Screen View with Crossfade
+        // Native iOS Default Parallax Slide Animation between Tabs
         AnimatedContent(
             targetState = selectedTab,
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
-            label = "tab_transition",
+            transitionSpec = {
+                if (targetState > initialState) {
+                    (slideInHorizontally(
+                        animationSpec = spring(stiffness = 550f, dampingRatio = 0.85f)
+                    ) { width -> width / 4 } + fadeIn(animationSpec = tween(160)))
+                        .togetherWith(
+                            slideOutHorizontally(
+                                animationSpec = spring(stiffness = 550f, dampingRatio = 0.85f)
+                            ) { width -> -width / 4 } + fadeOut(animationSpec = tween(160))
+                        )
+                } else {
+                    (slideInHorizontally(
+                        animationSpec = spring(stiffness = 550f, dampingRatio = 0.85f)
+                    ) { width -> -width / 4 } + fadeIn(animationSpec = tween(160)))
+                        .togetherWith(
+                            slideOutHorizontally(
+                                animationSpec = spring(stiffness = 550f, dampingRatio = 0.85f)
+                            ) { width -> width / 4 } + fadeOut(animationSpec = tween(160))
+                        )
+                }
+            },
+            label = "ios_tab_transition",
             modifier = Modifier.fillMaxSize()
         ) { tabIndex ->
             when (tabIndex) {
@@ -119,7 +151,7 @@ fun WattKitCupertinoApp() {
             }
         }
 
-        // Apple Music Floating Liquid Glass Dock TabBar
+        // Apple Music Style Floating Liquid Glass Dock in Light Mode
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -127,9 +159,14 @@ fun WattKitCupertinoApp() {
                 .padding(horizontal = 24.dp, vertical = 12.dp)
                 .fillMaxWidth()
                 .height(64.dp)
+                .shadow(
+                    elevation = 10.dp,
+                    shape = RoundedCornerShape(32.dp),
+                    spotColor = Color(0x33000000)
+                )
                 .liquidGlass(
                     shape = RoundedCornerShape(32.dp),
-                    backgroundColor = Color(0xEB141F2E),
+                    backgroundColor = Color(0xF5FFFFFF), // Frosted white acrylic
                     showSpecularBorder = true
                 )
         ) {
@@ -139,7 +176,7 @@ fun WattKitCupertinoApp() {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 CupertinoDockTabItem(
-                    title = "首页",
+                    title = "概览",
                     selected = selectedTab == 0,
                     selectedIcon = Icons.Filled.Home,
                     unselectedIcon = Icons.Outlined.Home,
@@ -187,8 +224,8 @@ private fun CupertinoDockTabItem(
         label = "tab_scale"
     )
 
-    val activeColor = Color(0xFF34D399) // Mint green matching user's mockup
-    val inactiveColor = Color(0xFF8E8E93) // CupertinoColors.systemGray
+    val activeColor = CupertinoColors.systemGreen // Official iOS System Green
+    val inactiveColor = CupertinoColors.systemGray // Official iOS System Gray
 
     Column(
         modifier = Modifier

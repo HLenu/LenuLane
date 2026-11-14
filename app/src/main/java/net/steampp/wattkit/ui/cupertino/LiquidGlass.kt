@@ -13,12 +13,12 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * Liquid Glass Modifier inspired by Apple Music & iOS 26 translucent refractive materials.
- * Produces crisp content atop a rich translucent backdrop with specular highlight rim.
+ * Liquid Glass Modifier inspired by Apple Music & iOS translucent materials.
+ * Produces crisp content atop a clean translucent backdrop with a soft specular light rim.
  */
 fun Modifier.liquidGlass(
     shape: Shape = RoundedCornerShape(24.dp),
-    backgroundColor: Color = Color(0xDE141F2E), // Translucent deep slate
+    backgroundColor: Color = CupertinoColors.liquidGlassBar,
     borderStrokeWidth: Dp = 0.6.dp,
     showSpecularBorder: Boolean = true
 ): Modifier {
@@ -32,9 +32,9 @@ fun Modifier.liquidGlass(
                 width = borderStrokeWidth,
                 brush = Brush.verticalGradient(
                     listOf(
-                        Color(0x4DFFFFFF),
-                        Color(0x14FFFFFF),
-                        Color(0x05FFFFFF)
+                        Color(0x20000000),
+                        Color(0x0F000000),
+                        Color(0x05000000)
                     )
                 )
             ),
