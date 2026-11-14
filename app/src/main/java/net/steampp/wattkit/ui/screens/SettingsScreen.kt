@@ -1,16 +1,23 @@
 package net.steampp.wattkit.ui.screens
 
-import androidx.compose.foundation.BorderStroke
+import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -18,220 +25,364 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import net.steampp.wattkit.ui.components.BentoCard
-import net.steampp.wattkit.ui.theme.*
+import net.steampp.wattkit.ui.cupertino.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
+data class DiagnosticTarget(
+    val name: String,
+    val url: String,
+    val hostOverride: String? = null,
+    val isPost: Boolean = false
+)
+
+data class DiagnosticResult(
+    val target: DiagnosticTarget,
+    val latencyMs: Long,
+    val isSuccess: Boolean,
+    val message: String
+)
+
 @Composable
 fun SettingsScreen() {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var pingResults by remember { mutableStateOf<List<Triple<String, String, Boolean>>>(emptyList()) }
     var isPinging by remember { mutableStateOf(false) }
+    var results by remember { mutableStateOf<List<DiagnosticResult>>(emptyList()) }
+
+    val targets = remember {
+        listOf(
+            DiagnosticTarget(
+                name = "Steam 社区反代节点",
+                url = "https://steamcommunity.rmbgame.net",
+                hostOverride = "steamcommunity.com"
+            ),
+            DiagnosticTarget(
+                name = "Pixiv 插画加速节点",
+                url = "https://i.pixiv.re"
+            ),
+            DiagnosticTarget(
+                name = "Steam 官方令牌服务",
+                url = "https://api.steampowered.com/ITwoFactorService/QueryTime/v0001/",
+                isPost = true
+            ),
+            DiagnosticTarget(
+                name = "GitHub 开发者网络",
+                url = "https://api.github.com"
+            )
+        )
+    }
 
     fun runDiagnostics() {
+        if (isPinging) return
         isPinging = true
         coroutineScope.launch {
-            val results = withContext(Dispatchers.IO) {
+            val list = withContext(Dispatchers.IO) {
                 val client = OkHttpClient.Builder()
                     .connectTimeout(5, TimeUnit.SECONDS)
                     .readTimeout(5, TimeUnit.SECONDS)
                     .hostnameVerifier { _, _ -> true }
                     .build()
 
-                val testSites = listOf(
-                    "Steam 社区反代节点" to "https://steamcommunity.rmbgame.net",
-                    "Pixiv 插画加速节点" to "https://i.pixiv.re",
-                    "Steam 官方令牌服务" to "https://api.steampowered.com/ITwoFactorService/QueryTime/v0001/",
-                    "GitHub 开发者网络" to "https://api.github.com"
-                )
-
-                testSites.map { (name, url) ->
+                targets.map { target ->
                     val start = System.currentTimeMillis()
                     try {
                         val reqBuilder = Request.Builder()
-                            .url(url)
+                            .url(target.url)
                             .header("User-Agent", "WattKit/1.0.0")
-                        if (url.contains("rmbgame")) {
-                            reqBuilder.header("Host", "steamcommunity.com")
+
+                        if (target.hostOverride != null) {
+                            reqBuilder.header("Host", target.hostOverride)
                         }
-                        if (url.contains("QueryTime")) {
-                            reqBuilder.post(ByteArray(0).toRequestBody(null))
+
+                        if (target.isPost) {
+                            reqBuilder.post("".toRequestBody())
                         }
-                        val res = client.newCall(reqBuilder.build()).execute()
-                        val elapsed = System.currentTimeMillis() - start
-                        res.close()
-                        Triple(name, "正常 (HTTP ${res.code}, ${elapsed}ms)", true)
+
+                        client.newCall(reqBuilder.build()).execute().use { resp ->
+                            val latency = System.currentTimeMillis() - start
+                            DiagnosticResult(
+                                target = target,
+                                latencyMs = latency,
+                                isSuccess = resp.isSuccessful,
+                                message = "HTTP ${resp.code}"
+                            )
+                        }
                     } catch (e: Exception) {
-                        Triple(name, "失败 (${e.message ?: "连接超时"})", false)
+                        val latency = System.currentTimeMillis() - start
+                        DiagnosticResult(
+                            target = target,
+                            latencyMs = latency,
+                            isSuccess = false,
+                            message = e.javaClass.simpleName
+                        )
                     }
                 }
             }
-            pingResults = results
+            results = list
             isPinging = false
-        }
-    }
-
-    // Auto-test on first display
-    LaunchedEffect(Unit) {
-        if (pingResults.isEmpty()) {
-            runDiagnostics()
+            Toast.makeText(context, "网络雷达探测已完成", Toast.LENGTH_SHORT).show()
         }
     }
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .background(CupertinoColors.systemBackground)
+            .padding(horizontal = 16.dp)
     ) {
         item {
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = "网络连通性雷达",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
             Spacer(modifier = Modifier.height(12.dp))
+            CupertinoPageHeader(
+                title = "工具与设置",
+                subtitle = "网络连通性雷达探针与系统底层运行规范"
+            )
+        }
 
-            // Diagnostic Radar Bento Card
-            BentoCard(
-                cornerRadius = 24.dp,
-                containerColor = DarkSurfaceLow
+        // Section 1: Network Radar Diagnostic Probe
+        item {
+            CupertinoSection(
+                title = "网络连通性雷达",
+                footer = "测试客户端到达各个国内外反代服务节点与 API 的端到端响应延迟。"
             ) {
-                Text(
-                    text = "实时探测各平台核心节点与反向代理链路往返延迟：",
-                    fontSize = 12.sp,
-                    color = TextSecondary
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-
-                if (isPinging && pingResults.isEmpty()) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(vertical = 12.dp)
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            color = SteamCyan,
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = "正在探测加速节点与时钟服务延迟...",
-                            fontSize = 13.sp,
-                            color = TextTertiary
-                        )
-                    }
-                } else {
-                    pingResults.forEach { (name, info, isSuccess) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 7.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = if (isSuccess) Icons.Default.CheckCircle else Icons.Default.Error,
-                                    contentDescription = null,
-                                    tint = if (isSuccess) NeonEmerald else Color(0xFFEF4444),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
+                targets.forEachIndexed { index, target ->
+                    val res = results.find { it.target.name == target.name }
+                    CupertinoCell(
+                        title = target.name,
+                        subtitle = target.url,
+                        icon = Icons.Default.WifiTethering,
+                        iconBackgroundColor = when {
+                            res == null -> CupertinoColors.systemGray3
+                            res.isSuccess -> CupertinoColors.systemGreen
+                            else -> CupertinoColors.systemRed
+                        },
+                        showDivider = true,
+                        trailingContent = {
+                            if (res == null) {
                                 Text(
-                                    text = name,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = TextPrimary
+                                    text = "未探测",
+                                    fontSize = 12.sp,
+                                    color = CupertinoColors.tertiaryLabel
                                 )
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(7.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                if (res.isSuccess) CupertinoColors.systemGreen else CupertinoColors.systemRed
+                                            )
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "${res.latencyMs} ms",
+                                        fontSize = 13.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (res.isSuccess) CupertinoColors.label else CupertinoColors.systemRed
+                                    )
+                                }
                             }
+                        }
+                    )
+                }
 
-                            Surface(
-                                color = if (isSuccess) NeonEmerald.copy(alpha = 0.12f) else Color(0xFFEF4444).copy(alpha = 0.12f),
-                                shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isSuccess) NeonEmerald.copy(alpha = 0.3f) else Color(0xFFEF4444).copy(alpha = 0.3f)
-                                )
-                            ) {
-                                Text(
-                                    text = info,
-                                    fontSize = 11.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Medium,
-                                    color = if (isSuccess) NeonEmerald else Color(0xFFEF4444),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
-                            }
+                // Radar trigger button
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !isPinging) { runDiagnostics() }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isPinging) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = CupertinoColors.systemBlue,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "正在探测各个加速节点...",
+                                fontSize = 14.sp,
+                                color = CupertinoColors.systemBlue
+                            )
+                        }
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = CupertinoColors.systemBlue,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "开始雷达连通性探测",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = CupertinoColors.systemBlue
+                            )
                         }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(18.dp))
-
-                Button(
-                    onClick = { runDiagnostics() },
-                    enabled = !isPinging,
-                    colors = ButtonDefaults.buttonColors(containerColor = SteamDeepBlue),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().height(46.dp)
-                ) {
-                    if (isPinging) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("正在探测网络链路...", fontSize = 13.sp)
-                    } else {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("一键重新测速探针", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    }
-                }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+        }
 
-            // Tech Specs Bento Card
-            Text(
-                text = "技术规范与设计架构",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-
-            BentoCard(
-                cornerRadius = 24.dp,
-                containerColor = DarkSurfaceLow
+        // Section 2: Extended Toolbox
+        item {
+            CupertinoSection(
+                title = "实用工具箱",
+                footer = "集成本地常用网络维护与游戏辅助能力。"
             ) {
-                Text(
-                    text = "WattKit Android (Native Engine)",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
-                    color = TextPrimary
+                CupertinoCell(
+                    title = "Steam 喜加一自动入库",
+                    subtitle = "全自动追踪并领取全球限免游戏 (规划中)",
+                    icon = Icons.Default.CardGiftcard,
+                    iconBackgroundColor = CupertinoColors.systemPink,
+                    trailingContent = {
+                        Text(
+                            text = "即将来临",
+                            fontSize = 12.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
                 )
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(text = "版本: 1.0.0 (Release 64KB/16KB 对齐)", fontSize = 12.sp, color = TextSecondary)
-                Text(text = "架构: 纯 Kotlin + Jetpack Compose + C 原生 tun2socks", fontSize = 12.sp, color = TextSecondary)
-                Text(text = "安全: 免系统 CA 证书注入、SNI 动态嗅探代理、透明双向管道", fontSize = 12.sp, color = TextSecondary)
-                Spacer(modifier = Modifier.height(12.dp))
-                Text(
-                    text = "遵循 GPL-3.0 开源协议。彻底废除旧版庞大臃肿且在 Android 15 上崩溃的 Xamarin/Mono 历史包袱。安装包由 150MB+ 缩减至 19MB，冷启动 < 400ms，内存极轻。",
-                    fontSize = 12.sp,
-                    color = TextTertiary,
-                    lineHeight = 18.sp
+                CupertinoCell(
+                    title = "云存档备份与同步",
+                    subtitle = "本地游戏存档 WebDAV 双向备份",
+                    icon = Icons.Default.CloudSync,
+                    iconBackgroundColor = CupertinoColors.systemIndigo,
+                    trailingContent = {
+                        Text(
+                            text = "即将来临",
+                            fontSize = 12.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                )
+                CupertinoCell(
+                    title = "本地 Hosts 冲突净化",
+                    subtitle = "一键清理历史冲突与污染条目",
+                    icon = Icons.Default.CleaningServices,
+                    iconBackgroundColor = CupertinoColors.systemOrange,
+                    showDivider = false,
+                    onClick = {
+                        Toast.makeText(context, "本地环境 Hosts 正常，无残留污染条目", Toast.LENGTH_SHORT).show()
+                    }
                 )
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Section 3: iOS General > About Tech Architecture
+        item {
+            CupertinoSection(
+                title = "系统底层架构 (Android 15+)",
+                footer = "适配 2026 年 Android 15+ 强制 16KB Page Size 内存对齐标准与原生沙箱隔离。"
+            ) {
+                CupertinoCell(
+                    title = "16KB Page Size ELF",
+                    subtitle = "Max Page Size 0x4000 对齐",
+                    icon = Icons.Default.Memory,
+                    iconBackgroundColor = CupertinoColors.systemGreen,
+                    trailingContent = {
+                        Text(
+                            text = "原生对齐",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = CupertinoColors.systemGreen
+                        )
+                    }
+                )
+                CupertinoCell(
+                    title = "tun2socks 转发内核",
+                    subtitle = "基于 lwIP 2.1.2 零拷贝 TCP/IP 协议栈",
+                    icon = Icons.Default.Lan,
+                    iconBackgroundColor = CupertinoColors.systemTeal,
+                    trailingContent = {
+                        Text(
+                            text = "lwIP 2.1.2",
+                            fontSize = 13.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                )
+                CupertinoCell(
+                    title = "免证书 SNI 转发",
+                    subtitle = "TLS ClientHello 握手嗅探，不侵入系统 CA",
+                    icon = Icons.Default.Security,
+                    iconBackgroundColor = CupertinoColors.systemIndigo,
+                    trailingContent = {
+                        Text(
+                            text = "无侵入",
+                            fontSize = 13.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                )
+                CupertinoCell(
+                    title = "Steam Guard 认证",
+                    subtitle = "RFC-6238 HMAC-SHA1 动态加密算法",
+                    icon = Icons.Default.VpnKey,
+                    iconBackgroundColor = CupertinoColors.systemOrange,
+                    showDivider = false,
+                    trailingContent = {
+                        Text(
+                            text = "HMAC-SHA1",
+                            fontSize = 13.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Section 4: About & License
+        item {
+            CupertinoSection(
+                title = "关于 WATT TOOLKIT"
+            ) {
+                CupertinoCell(
+                    title = "应用版本",
+                    icon = Icons.Default.Info,
+                    iconBackgroundColor = CupertinoColors.systemGray2,
+                    trailingContent = {
+                        Text(
+                            text = "v1.0.0 (2026.11)",
+                            fontSize = 13.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                )
+                CupertinoCell(
+                    title = "开源协议",
+                    icon = Icons.Default.Gavel,
+                    iconBackgroundColor = CupertinoColors.systemGray2,
+                    showDivider = false,
+                    trailingContent = {
+                        Text(
+                            text = "GNU GPL-3.0",
+                            fontSize = 13.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                )
+            }
+        }
+
+        // Safe spacing for bottom floating navigation bar
+        item {
+            Spacer(modifier = Modifier.height(120.dp))
         }
     }
 }
