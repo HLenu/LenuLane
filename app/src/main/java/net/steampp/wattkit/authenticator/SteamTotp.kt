@@ -4,6 +4,7 @@ import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.nio.ByteBuffer
@@ -42,9 +43,13 @@ object SteamTotp {
      * Synchronize time offset with Steam official Two-Factor query time API.
      */
     suspend fun syncServerTime(): Boolean = withContext(Dispatchers.IO) {
+        val formBody = FormBody.Builder()
+            .add("steamid", "0")
+            .build()
+
         val request = Request.Builder()
             .url("https://api.steampowered.com/ITwoFactorService/QueryTime/v0001/")
-            .post(okhttp3.RequestBody.create(null, ByteArray(0)))
+            .post(formBody)
             .header("User-Agent", "WattKit/1.0.0")
             .build()
 

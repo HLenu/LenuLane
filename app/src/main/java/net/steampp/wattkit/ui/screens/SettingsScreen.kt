@@ -98,7 +98,7 @@ fun SettingsScreen() {
                         }
 
                         if (target.isPost) {
-                            reqBuilder.post("".toRequestBody())
+                            reqBuilder.post(okhttp3.FormBody.Builder().add("steamid", "0").build())
                         }
 
                         client.newCall(reqBuilder.build()).execute().use { resp ->
