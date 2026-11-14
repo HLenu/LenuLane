@@ -367,9 +367,26 @@ object RuleManager {
         )
     )
 
+    val allRules = androidx.compose.runtime.mutableStateListOf<AccelerationRule>().apply {
+        addAll(defaultRules)
+    }
+
+    fun setRuleEnabled(id: String, enabled: Boolean) {
+        val idx = allRules.indexOfFirst { it.id == id }
+        if (idx != -1) {
+            allRules[idx] = allRules[idx].copy(isEnabled = enabled)
+        }
+    }
+
+    fun isRuleEnabled(id: String): Boolean {
+        return allRules.find { it.id == id }?.isEnabled ?: true
+    }
+
+    fun getEnabledCount(): Int = allRules.count { it.isEnabled }
+
     fun findMatchingTarget(requestedHost: String, requestedPort: Int): Pair<String, Int>? {
         val hostLower = requestedHost.lowercase().trimEnd('.')
-        for (rule in defaultRules) {
+        for (rule in allRules) {
             if (!rule.isEnabled) continue
             for (pattern in rule.domains) {
                 if (matchesDomain(hostLower, pattern)) {

@@ -328,13 +328,36 @@ fun AuthenticatorScreen() {
                             iconBackgroundColor = if (isSelected) CupertinoColors.systemGreen else CupertinoColors.systemGray3,
                             showDivider = index < accounts.size - 1,
                             trailingContent = {
-                                if (isSelected) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = "当前选中",
-                                        tint = CupertinoColors.systemGreen,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = "当前选中",
+                                            tint = CupertinoColors.systemGreen,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    if (accounts.size > 1) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        IconButton(
+                                            onClick = {
+                                                storage.removeAccount(acc.id)
+                                                accounts = storage.getAccounts()
+                                                if (selectedIndex >= accounts.size) {
+                                                    selectedIndex = (accounts.size - 1).coerceAtLeast(0)
+                                                }
+                                                Toast.makeText(context, "已删除账号 ${acc.accountName}", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteOutline,
+                                                contentDescription = "删除账号",
+                                                tint = CupertinoColors.systemRed.copy(alpha = 0.8f),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             },
                             onClick = { selectedIndex = index }

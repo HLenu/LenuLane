@@ -28,7 +28,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import net.steampp.wattkit.proxy.RuleManager
 import net.steampp.wattkit.ui.cupertino.CupertinoColors
+import net.steampp.wattkit.vpn.WattVpnService
 
 @Composable
 fun HomeScreen(
@@ -36,14 +38,18 @@ fun HomeScreen(
     onToggleVpn: () -> Unit,
     onNavigateToTab: (Int) -> Unit
 ) {
-    // VPN Up-time counter (HH:mm:ss)
+    val liveDownloadSpeed by WattVpnService.rxSpeed.collectAsState()
+    val liveUploadSpeed by WattVpnService.txSpeed.collectAsState()
+    val vpnStartTime by WattVpnService.startTime.collectAsState()
+    val enabledRuleCount = RuleManager.getEnabledCount()
+
+    // Persistent VPN Up-time counter (HH:mm:ss) derived from service start time
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(isVpnRunning) {
-        if (isVpnRunning) {
-            elapsedSeconds = 1L
+    LaunchedEffect(isVpnRunning, vpnStartTime) {
+        if (isVpnRunning && vpnStartTime > 0L) {
             while (true) {
+                elapsedSeconds = (System.currentTimeMillis() - vpnStartTime) / 1000L
                 delay(1000)
-                elapsedSeconds++
             }
         } else {
             elapsedSeconds = 0L
@@ -77,7 +83,7 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 IconButton(
-                    onClick = { /* Menu Action */ },
+                    onClick = { onNavigateToTab(3) },
                     modifier = Modifier
                         .size(38.dp)
                         .clip(CircleShape)
@@ -184,7 +190,7 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Text(
-                        text = if (isVpnRunning) "已启用 Steam 社区、GitHub、Pixiv 等加速规则" else "点击下方开关开启免证书透明加速分流",
+                        text = if (isVpnRunning) "已启用 Steam 社区、GitHub 等 $enabledRuleCount 项加速规则" else "点击下方开关开启免证书透明加速分流",
                         fontSize = 13.sp,
                         color = CupertinoColors.secondaryLabel
                     )
@@ -210,7 +216,7 @@ fun HomeScreen(
                             Text(text = "下载速度", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = if (isVpnRunning) "2.4 MB/s" else "0.0 KB/s",
+                                text = if (isVpnRunning) liveDownloadSpeed else "0.0 KB/s",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = CupertinoColors.label
@@ -220,7 +226,7 @@ fun HomeScreen(
                             Text(text = "上传速度", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = if (isVpnRunning) "128 KB/s" else "0.0 KB/s",
+                                text = if (isVpnRunning) liveUploadSpeed else "0.0 KB/s",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = CupertinoColors.label

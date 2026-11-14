@@ -35,7 +35,7 @@ fun AccelerationScreen(
     isVpnRunning: Boolean,
     onToggleVpn: () -> Unit
 ) {
-    val rules = remember { mutableStateListOf(*RuleManager.defaultRules.toTypedArray()) }
+    val rules = RuleManager.allRules
     var selectedCategory by remember { mutableStateOf(RuleCategory.ALL) }
     var searchQuery by remember { mutableStateOf("") }
     var expandedRuleId by remember { mutableStateOf<String?>(null) }
@@ -165,10 +165,7 @@ fun AccelerationScreen(
                                     CupertinoSwitch(
                                         checked = rule.isEnabled,
                                         onCheckedChange = { checked ->
-                                            val idx = rules.indexOfFirst { it.id == rule.id }
-                                            if (idx != -1) {
-                                                rules[idx] = rules[idx].copy(isEnabled = checked)
-                                            }
+                                            RuleManager.setRuleEnabled(rule.id, checked)
                                         }
                                     )
                                 }

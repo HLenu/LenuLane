@@ -7,11 +7,17 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.*
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 class LocalProxyServer(
     private val port: Int = 28282,
     private val vpnService: VpnService
 ) {
+    companion object {
+        val totalRxBytes = AtomicLong(0L)
+        val totalTxBytes = AtomicLong(0L)
+    }
+
     private val tag = "LocalProxyServer"
     private var serverSocket: ServerSocket? = null
     private var isRunning = false
@@ -191,9 +197,9 @@ class LocalProxyServer(
             targetOut.write(initialBuffer, 0, bytesRead)
             targetOut.flush()
 
-            // Bi-directional pipe
-            val job1 = launch { pipe(clientIn, targetOut) }
-            val job2 = launch { pipe(targetIn, clientOut) }
+            // Bi-directional pipe: job1 forwards client upload (Tx), job2 forwards server download (Rx)
+            val job1 = launch { pipe(clientIn, targetOut, isRx = false) }
+            val job2 = launch { pipe(targetIn, clientOut, isRx = true) }
 
             job1.join()
             job2.join()
@@ -209,13 +215,18 @@ class LocalProxyServer(
         clientOut.flush()
     }
 
-    private fun pipe(input: InputStream, output: OutputStream) {
+    private fun pipe(input: InputStream, output: OutputStream, isRx: Boolean) {
         val buffer = ByteArray(16384)
         try {
             var n: Int
             while (input.read(buffer).also { n = it } != -1) {
                 output.write(buffer, 0, n)
                 output.flush()
+                if (isRx) {
+                    totalRxBytes.addAndGet(n.toLong())
+                } else {
+                    totalTxBytes.addAndGet(n.toLong())
+                }
             }
         } catch (_: Exception) {}
     }

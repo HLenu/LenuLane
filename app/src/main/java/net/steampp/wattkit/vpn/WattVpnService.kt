@@ -9,24 +9,30 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
+import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.steampp.wattkit.MainActivity
 import net.steampp.wattkit.R
 import net.steampp.wattkit.proxy.LocalProxyServer
 import java.io.File
+import java.util.Locale
 
 class WattVpnService : VpnService() {
     private val tag = "WattVpnService"
     private var vpnInterface: ParcelFileDescriptor? = null
-    private var tun2socksProcess: Process? = null
+    private var tun2socksProcess: java.lang.Process? = null
     private var proxyServer: LocalProxyServer? = null
     private var sockFile: File? = null
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var trafficJob: Job? = null
 
     companion object {
         const val ACTION_START = "net.steampp.wattkit.vpn.START"
@@ -36,6 +42,15 @@ class WattVpnService : VpnService() {
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning = _isRunning.asStateFlow()
+
+        private val _startTime = MutableStateFlow(0L)
+        val startTime = _startTime.asStateFlow()
+
+        private val _rxSpeed = MutableStateFlow("0.0 KB/s")
+        val rxSpeed = _rxSpeed.asStateFlow()
+
+        private val _txSpeed = MutableStateFlow("0.0 KB/s")
+        val txSpeed = _txSpeed.asStateFlow()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -157,7 +172,9 @@ class WattVpnService : VpnService() {
                 }
             }.start()
 
+            _startTime.value = System.currentTimeMillis()
             _isRunning.value = true
+            startTrafficMonitor()
             Log.i(tag, "WattKit VPN successfully started and running.")
         } catch (e: Exception) {
             Log.e(tag, "Failed to start VPN", e)
@@ -168,6 +185,11 @@ class WattVpnService : VpnService() {
     private fun stopVpn() {
         Log.i(tag, "Stopping WattKit VPN Service...")
         _isRunning.value = false
+        trafficJob?.cancel()
+        trafficJob = null
+        _startTime.value = 0L
+        _rxSpeed.value = "0.0 KB/s"
+        _txSpeed.value = "0.0 KB/s"
 
         try {
             tun2socksProcess?.destroy()
@@ -193,7 +215,52 @@ class WattVpnService : VpnService() {
 
     override fun onDestroy() {
         stopVpn()
+        serviceScope.cancel()
         super.onDestroy()
+    }
+
+    private fun startTrafficMonitor() {
+        trafficJob?.cancel()
+        trafficJob = serviceScope.launch {
+            val myUid = Process.myUid()
+            var prevUidRx = TrafficStats.getUidRxBytes(myUid).coerceAtLeast(0L)
+            var prevUidTx = TrafficStats.getUidTxBytes(myUid).coerceAtLeast(0L)
+            var prevProxyRx = LocalProxyServer.totalRxBytes.get()
+            var prevProxyTx = LocalProxyServer.totalTxBytes.get()
+
+            while (_isRunning.value) {
+                delay(1000)
+                val currUidRx = TrafficStats.getUidRxBytes(myUid).coerceAtLeast(0L)
+                val currUidTx = TrafficStats.getUidTxBytes(myUid).coerceAtLeast(0L)
+                val currProxyRx = LocalProxyServer.totalRxBytes.get()
+                val currProxyTx = LocalProxyServer.totalTxBytes.get()
+
+                val deltaUidRx = if (currUidRx >= prevUidRx) currUidRx - prevUidRx else 0L
+                val deltaUidTx = if (currUidTx >= prevUidTx) currUidTx - prevUidTx else 0L
+                val deltaProxyRx = if (currProxyRx >= prevProxyRx) currProxyRx - prevProxyRx else 0L
+                val deltaProxyTx = if (currProxyTx >= prevProxyTx) currProxyTx - prevProxyTx else 0L
+
+                val deltaRx = maxOf(deltaUidRx, deltaProxyRx)
+                val deltaTx = maxOf(deltaUidTx, deltaProxyTx)
+
+                _rxSpeed.value = formatSpeed(deltaRx)
+                _txSpeed.value = formatSpeed(deltaTx)
+
+                prevUidRx = currUidRx
+                prevUidTx = currUidTx
+                prevProxyRx = currProxyRx
+                prevProxyTx = currProxyTx
+            }
+        }
+    }
+
+    private fun formatSpeed(bytesPerSec: Long): String {
+        return when {
+            bytesPerSec < 1024 -> "$bytesPerSec B/s"
+            bytesPerSec < 1024 * 1024 -> String.format(Locale.US, "%.1f KB/s", bytesPerSec / 1024.0)
+            bytesPerSec < 1024 * 1024 * 1024 -> String.format(Locale.US, "%.1f MB/s", bytesPerSec / (1024.0 * 1024.0))
+            else -> String.format(Locale.US, "%.1f GB/s", bytesPerSec / (1024.0 * 1024.0 * 1024.0))
+        }
     }
 
     private fun createNotificationChannel() {
