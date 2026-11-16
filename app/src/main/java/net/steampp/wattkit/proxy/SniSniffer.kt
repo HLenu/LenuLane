@@ -1,97 +1,99 @@
 package net.steampp.wattkit.proxy
 
-import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
+/** Extracts a DNS hostname from a complete, single-record TLS ClientHello. */
 object SniSniffer {
-    /**
-     * Extracts the Server Name Indication (SNI) from a TLS ClientHello packet.
-     * Returns null if the packet is not a valid TLS ClientHello or contains no SNI extension.
-     */
     fun sniffSni(data: ByteArray, length: Int): String? {
-        if (length < 44) return null
-        val buffer = ByteBuffer.wrap(data, 0, length)
+        if (length < 9 || length > data.size) return null
 
-        // 1. TLS Record Header
-        val contentType = buffer.get().toInt() and 0xFF
-        if (contentType != 0x16) return null // Must be Handshake (22)
+        // TLS record: content type, legacy version, and payload length.
+        if (u8(data, 0) != 0x16 || u8(data, 1) != 3) return null
+        val recordLength = u16(data, 3)
+        if (recordLength < 4 || recordLength > length - 5) return null
+        val recordEnd = 5 + recordLength
 
-        val majorVersion = buffer.get().toInt() and 0xFF
-        val minorVersion = buffer.get().toInt() and 0xFF
-        if (majorVersion != 3) return null // SSL 3.0 / TLS 1.x
+        // A fragmented ClientHello across multiple TLS records is not parsed.
+        if (u8(data, 5) != 1) return null
+        val helloLength = (u8(data, 6) shl 16) or (u8(data, 7) shl 8) or u8(data, 8)
+        val helloEnd = 9 + helloLength
+        if (helloEnd > recordEnd) return null
 
-        val recordLength = buffer.short.toInt() and 0xFFFF
-        if (recordLength > length - 5) {
-            // Buffer has partial record, proceed with available bytes if possible
+        var cursor = 9
+        // legacy_version (2) + random (32)
+        if (helloEnd - cursor < 34) return null
+        cursor += 34
+
+        if (helloEnd - cursor < 1) return null
+        val sessionIdLength = u8(data, cursor++)
+        if (sessionIdLength > helloEnd - cursor) return null
+        cursor += sessionIdLength
+
+        if (helloEnd - cursor < 2) return null
+        val cipherSuitesLength = u16(data, cursor)
+        cursor += 2
+        if (cipherSuitesLength < 2 || cipherSuitesLength % 2 != 0 || cipherSuitesLength > helloEnd - cursor) return null
+        cursor += cipherSuitesLength
+
+        if (helloEnd - cursor < 1) return null
+        val compressionLength = u8(data, cursor++)
+        if (compressionLength < 1 || compressionLength > helloEnd - cursor) return null
+        cursor += compressionLength
+
+        if (cursor == helloEnd) return null // No extensions.
+        if (helloEnd - cursor < 2) return null
+        val extensionsLength = u16(data, cursor)
+        cursor += 2
+        if (extensionsLength != helloEnd - cursor) return null
+
+        while (cursor < helloEnd) {
+            if (helloEnd - cursor < 4) return null
+            val type = u16(data, cursor)
+            val extensionLength = u16(data, cursor + 2)
+            cursor += 4
+            if (extensionLength > helloEnd - cursor) return null
+            if (type == 0) return parseServerName(data, cursor, cursor + extensionLength)
+            cursor += extensionLength
         }
-
-        // 2. Handshake Header
-        if (buffer.remaining() < 4) return null
-        val handshakeType = buffer.get().toInt() and 0xFF
-        if (handshakeType != 1) return null // Must be ClientHello (1)
-
-        val handshakeLen1 = buffer.get().toInt() and 0xFF
-        val handshakeLen2 = buffer.get().toInt() and 0xFF
-        val handshakeLen3 = buffer.get().toInt() and 0xFF
-        val handshakeLength = (handshakeLen1 shl 16) or (handshakeLen2 shl 8) or handshakeLen3
-
-        // Client Version (2 bytes) + Random (32 bytes) = 34 bytes
-        if (buffer.remaining() < 34) return null
-        buffer.position(buffer.position() + 34)
-
-        // Session ID
-        if (buffer.remaining() < 1) return null
-        val sessionIdLen = buffer.get().toInt() and 0xFF
-        if (buffer.remaining() < sessionIdLen) return null
-        buffer.position(buffer.position() + sessionIdLen)
-
-        // Cipher Suites
-        if (buffer.remaining() < 2) return null
-        val cipherSuitesLen = buffer.short.toInt() and 0xFFFF
-        if (buffer.remaining() < cipherSuitesLen) return null
-        buffer.position(buffer.position() + cipherSuitesLen)
-
-        // Compression Methods
-        if (buffer.remaining() < 1) return null
-        val compressionLen = buffer.get().toInt() and 0xFF
-        if (buffer.remaining() < compressionLen) return null
-        buffer.position(buffer.position() + compressionLen)
-
-        // Extensions
-        if (buffer.remaining() < 2) return null
-        val extensionsLen = buffer.short.toInt() and 0xFFFF
-
-        while (buffer.remaining() >= 4) {
-            val extType = buffer.short.toInt() and 0xFFFF
-            val extLen = buffer.short.toInt() and 0xFFFF
-            if (buffer.remaining() < extLen) break
-
-            if (extType == 0) { // server_name extension
-                val extEnd = buffer.position() + extLen
-                if (buffer.remaining() >= 2) {
-                    val serverNameListLen = buffer.short.toInt() and 0xFFFF
-                    while (buffer.position() < extEnd && buffer.remaining() >= 3) {
-                        val nameType = buffer.get().toInt() and 0xFF
-                        val nameLen = buffer.short.toInt() and 0xFFFF
-                        if (nameType == 0 && buffer.remaining() >= nameLen) { // host_name
-                            val nameBytes = ByteArray(nameLen)
-                            buffer.get(nameBytes)
-                            return String(nameBytes, StandardCharsets.UTF_8)
-                        } else {
-                            if (buffer.remaining() >= nameLen) {
-                                buffer.position(buffer.position() + nameLen)
-                            } else {
-                                break
-                            }
-                        }
-                    }
-                }
-                return null
-            } else {
-                buffer.position(buffer.position() + extLen)
-            }
-        }
-
         return null
     }
+
+    private fun parseServerName(data: ByteArray, start: Int, end: Int): String? {
+        if (end - start < 2) return null
+        val listLength = u16(data, start)
+        if (listLength != end - start - 2) return null
+
+        var cursor = start + 2
+        var hostname: String? = null
+        while (cursor < end) {
+            if (end - cursor < 3) return null
+            val nameType = u8(data, cursor)
+            val nameLength = u16(data, cursor + 1)
+            cursor += 3
+            if (nameLength > end - cursor) return null
+            if (nameType == 0) {
+                if (hostname != null) return null // Duplicate host_name entries.
+                hostname = readHostName(data, cursor, nameLength) ?: return null
+            }
+            cursor += nameLength
+        }
+        return hostname
+    }
+
+    private fun readHostName(data: ByteArray, start: Int, length: Int): String? {
+        if (length !in 1..253) return null
+        for (i in start until start + length) {
+            val ch = u8(data, i)
+            if (ch !in 0x30..0x39 && ch !in 0x41..0x5A &&
+                ch !in 0x61..0x7A && ch != 0x2D && ch != 0x2E) return null
+        }
+        val hostname = String(data, start, length, StandardCharsets.US_ASCII)
+        if (hostname.split('.').any { label ->
+                label.isEmpty() || label.length > 63 || label.first() == '-' || label.last() == '-'
+            }) return null
+        return hostname
+    }
+
+    private fun u8(data: ByteArray, index: Int) = data[index].toInt() and 0xFF
+    private fun u16(data: ByteArray, index: Int) = (u8(data, index) shl 8) or u8(data, index + 1)
 }
