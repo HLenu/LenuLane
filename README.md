@@ -20,8 +20,8 @@
 
 | 版本 | 类型 | 说明 |
 | :--- | :--- | :--- |
-| [**v1.0.1**](https://github.com/HLenu/WattKit/releases/tag/v1.0.1) | 源码发布 | 构建基建、规则匹配、代理健壮性与密钥加密修复，APK 请按下方「构建与编译」本地打包 |
-| [**v1.0.0**](https://github.com/HLenu/WattKit/releases/tag/v1.0.0) | 预编译 APK | 首个正式版本，附带可直接安装的 `WattKit-v1.0.0-release.apk` |
+| [**v1.0.1**](https://github.com/HLenu/WattKit/releases/tag/v1.0.1) | 预编译 APK | 最新版本，附带 `WattKit-v1.0.1-release.apk`（debug 签名，与 v1.0.0 签名不同，覆盖安装需先卸载） |
+| [**v1.0.0**](https://github.com/HLenu/WattKit/releases/tag/v1.0.0) | 预编译 APK | 首个正式版本，附带 `WattKit-v1.0.0-release.apk` |
 
 ---
 
@@ -88,6 +88,10 @@ cd WattKit
 ## 📝 更新日志
 
 ### v1.0.1
+**SNI 解析器加固**
+- 用严格边界校验的解析器替换原 ByteBuffer 实现：畸形/不完整的 TLS record 直接拒绝，校验 SNI 主机名字符集与 label 长度，拒绝重复 `host_name` 与超长扩展列表
+- 新增 `SniSnifferTest`（JUnit 4，9 个用例）与 GitHub Actions 工作流（`testDebugUnitTest` + `assembleDebug`）
+
 **构建与打包**
 - 用标准 Gradle 8.9 Wrapper 替换原先硬编码本机路径的 `gradlew.bat`，克隆后开箱即可构建
 - Release 签名不再硬编码作者私有 keystore：未设置 `WATTKIT_*` 环境变量时回退 debug 签名
