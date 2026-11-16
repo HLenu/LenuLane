@@ -5,12 +5,14 @@ plugins {
 
 android {
     namespace = "net.steampp.wattkit"
-    compileSdk = 34
+    // compileSdk 35 aligns with the 16KB Page Size / Android 15+ ELF requirement
+    // documented in README (AGP 8.7+ is required for compileSdk 35).
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "net.steampp.wattkit"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
 
@@ -19,25 +21,36 @@ android {
             useSupportLibrary = true
         }
         ndk {
+            // Keep in sync with the bundled 16KB-aligned .so files under app/src/main/jniLibs.
             abiFilters.addAll(listOf("arm64-v8a", "x86_64", "armeabi-v7a"))
         }
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = file("C:/Users/Administrator/Documents/Watt-Toolkit-Keystore/repair-test.keystore")
-            storePassword = "android"
-            keyAlias = "androidrepair"
-            keyPassword = "android"
-            enableV1Signing = true
-            enableV2Signing = true
+        // Release signing is opt-in via environment variables so that the project
+        // builds out-of-the-box for everyone (no private keystore is committed):
+        //   WATTKIT_STORE_FILE / WATTKIT_STORE_PASSWORD
+        //   WATTKIT_KEY_ALIAS  / WATTKIT_KEY_PASSWORD
+        // When unset, release builds fall back to the debug key.
+        val storeFilePath = System.getenv("WATTKIT_STORE_FILE")
+        if (storeFilePath != null && file(storeFilePath).exists()) {
+            create("release") {
+                storeFile = file(storeFilePath)
+                storePassword = System.getenv("WATTKIT_STORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("WATTKIT_KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("WATTKIT_KEY_PASSWORD") ?: ""
+                enableV1Signing = true
+                enableV2Signing = true
+            }
         }
     }
 
     buildTypes {
         release {
+            // R8 is intentionally left off for now; enable together with
+            // proguard-rules.pro once rules are verified on a real build.
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

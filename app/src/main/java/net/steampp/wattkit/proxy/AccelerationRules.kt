@@ -1,5 +1,9 @@
 package net.steampp.wattkit.proxy
 
+import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
+
 enum class RuleCategory(val displayName: String) {
     ALL("全部"),
     STEAM("Steam 宇宙"),
@@ -19,10 +23,20 @@ data class AccelerationRule(
     val domains: List<String>,
     val targetHost: String?,
     val targetPort: Int = 443,
-    var isEnabled: Boolean = true
+    val isEnabled: Boolean = true
 )
 
 object RuleManager {
+    private const val TAG = "RuleManager"
+    private const val PREFS_NAME = "wattkit_rules"
+    private const val KEY_DISABLED = "disabled_rule_ids"
+
+    private val lock = Any()
+    private var prefs: SharedPreferences? = null
+
+    // NOTE: domain patterns must be bare hostnames (optionally "*.example.com").
+    // SNI sniffing only ever sees a hostname, never a URL path, so patterns
+    // containing "/" (e.g. "www.google.com/recaptcha") can never match.
     val defaultRules = listOf(
         // ==================== 1. Steam 宇宙 ====================
         AccelerationRule(
@@ -76,7 +90,7 @@ object RuleManager {
             description = "加速游戏创意工坊 Mod 订阅检索、官方公告页面与 Steam 游戏直播流",
             category = RuleCategory.STEAM,
             domains = listOf(
-                "steamcommunity.com/workshop",
+                // workshop 页面本身走 steamcommunity.com，已由 steam_community 规则覆盖
                 "steamserver.net",
                 "steambroadcast.akamaized.net"
             ),
@@ -343,9 +357,12 @@ object RuleManager {
             description = "将谷歌人机验证码请求自动转发至国内可用通道 (www.recaptcha.net)",
             category = RuleCategory.TOOLS,
             domains = listOf(
-                "www.google.com/recaptcha",
-                "google.com/recaptcha",
-                "recaptcha.net"
+                // SNI 层只能看到主机名，无法区分 URL 路径，因此把整个
+                // www.google.com 主机重定向到镜像站（该主机在国内本就不可达，
+                // 影响仅为搜索页等同样走该域名的流量）
+                "www.google.com",
+                "recaptcha.net",
+                "www.recaptcha.net"
             ),
             targetHost = "www.recaptcha.net",
             targetPort = 443,
@@ -371,22 +388,64 @@ object RuleManager {
         addAll(defaultRules)
     }
 
-    fun setRuleEnabled(id: String, enabled: Boolean) {
-        val idx = allRules.indexOfFirst { it.id == id }
-        if (idx != -1) {
-            allRules[idx] = allRules[idx].copy(isEnabled = enabled)
+    /**
+     * Load persisted rule states. Must be called once from Application onCreate().
+     */
+    fun initialize(context: Context) {
+        prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val disabled = prefs?.getStringSet(KEY_DISABLED, emptySet()) ?: emptySet()
+        synchronized(lock) {
+            for (i in allRules.indices) {
+                if (allRules[i].id in disabled) {
+                    allRules[i] = allRules[i].copy(isEnabled = false)
+                }
+            }
         }
+        Log.i(TAG, "Loaded rule states: ${allRules.count { !it.isEnabled }} disabled")
+    }
+
+    fun setRuleEnabled(id: String, enabled: Boolean) {
+        synchronized(lock) {
+            val idx = allRules.indexOfFirst { it.id == id }
+            if (idx != -1) {
+                allRules[idx] = allRules[idx].copy(isEnabled = enabled)
+            }
+        }
+        persistDisabledIds()
     }
 
     fun isRuleEnabled(id: String): Boolean {
-        return allRules.find { it.id == id }?.isEnabled ?: true
+        synchronized(lock) {
+            return allRules.find { it.id == id }?.isEnabled ?: true
+        }
     }
 
-    fun getEnabledCount(): Int = allRules.count { it.isEnabled }
+    fun getEnabledCount(): Int {
+        synchronized(lock) {
+            return allRules.count { it.isEnabled }
+        }
+    }
+
+    private fun persistDisabledIds() {
+        val disabledIds = synchronized(lock) {
+            allRules.filter { !it.isEnabled }.map { it.id }.toSet()
+        }
+        prefs?.edit()?.putStringSet(KEY_DISABLED, disabledIds)?.apply()
+    }
+
+    /**
+     * Thread-safe snapshot used by the proxy IO threads.
+     * The compose state list is backed by snapshot state that must not be
+     * iterated concurrently from background threads while the UI mutates it.
+     */
+    fun snapshotRules(): List<AccelerationRule> = synchronized(lock) {
+        allRules.toList()
+    }
 
     fun findMatchingTarget(requestedHost: String, requestedPort: Int): Pair<String, Int>? {
         val hostLower = requestedHost.lowercase().trimEnd('.')
-        for (rule in allRules) {
+        val rules = snapshotRules()
+        for (rule in rules) {
             if (!rule.isEnabled) continue
             for (pattern in rule.domains) {
                 if (matchesDomain(hostLower, pattern)) {

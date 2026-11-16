@@ -83,6 +83,11 @@ class LocalProxyServer(
 
             // 2. Request Details
             val reqVer = input.read()
+            if (reqVer != 5) {
+                replyError(output)
+                client.close()
+                return@withContext
+            }
             val cmd = input.read()
             input.read() // RSVP
             val atyp = input.read()
@@ -120,16 +125,24 @@ class LocalProxyServer(
 
             if (cmd == 1) { // CONNECT
                 handleConnect(client, input, output, targetHost, targetPort)
-            } else if (cmd == 3) { // UDP ASSOCIATE
-                handleUdpAssociate(output)
             } else {
-                output.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0)) // Command not supported
+                // UDP ASSOCIATE is not supported (no UDP relay is running).
+                // Replying success with a fake relay port would leave clients
+                // hanging, so explicitly reject with "command not supported".
+                output.write(byteArrayOf(5, 7, 0, 1, 0, 0, 0, 0, 0, 0))
                 output.flush()
                 client.close()
             }
         } catch (_: Exception) {
             try { client.close() } catch (_: Exception) {}
         }
+    }
+
+    private fun replyError(output: OutputStream) {
+        try {
+            output.write(byteArrayOf(5, 1, 0, 1, 0, 0, 0, 0, 0, 0)) // general SOCKS server failure
+            output.flush()
+        } catch (_: Exception) {}
     }
 
     private suspend fun handleConnect(
@@ -146,12 +159,13 @@ class LocalProxyServer(
             clientOut.flush()
 
             // Read the initial payload packet from client
-            val initialBuffer = ByteArray(4096)
-            val bytesRead = clientIn.read(initialBuffer)
-            if (bytesRead <= 0) {
+            val initial = readInitialPacket(clientIn)
+            if (initial == null || initial.second <= 0) {
                 client.close()
                 return@withContext
             }
+            val initialBuffer = initial.first
+            val bytesRead = initial.second
 
             var destHost = initialHost
             var destPort = targetPort
@@ -210,9 +224,60 @@ class LocalProxyServer(
         }
     }
 
-    private fun handleUdpAssociate(clientOut: OutputStream) {
-        clientOut.write(byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, (28283 shr 8).toByte(), (28283 and 0xFF).toByte()))
-        clientOut.flush()
+    /**
+     * Reads the first payload the client sends after the SOCKS5 handshake.
+     *
+     * A TLS ClientHello frequently spans multiple TCP segments (or exceeds
+     * 4KB with post-quantum key shares), so when the data looks like a TLS
+     * handshake record we keep reading until the full record length declared
+     * in the 5-byte TLS record header has been received (or a sane cap /
+     * timeout is hit). This prevents SNI sniffing from failing on fragmented
+     * hellos, which would silently bypass acceleration rules.
+     *
+     * Returns (buffer, bytesRead) or null on EOF/error.
+     */
+    private fun readInitialPacket(input: InputStream, cap: Int = 5 + 16384 + 2048): Pair<ByteArray, Int>? {
+        var buffer = ByteArray(4096)
+        var bytesRead = 0
+
+        // First chunk (blocking, bounded by socket soTimeout)
+        while (bytesRead < 5) {
+            val n = input.read(buffer, bytesRead, 5 - bytesRead)
+            if (n < 0) return if (bytesRead > 0) Pair(buffer, bytesRead) else null
+            bytesRead += n
+        }
+
+        // Does it look like a TLS handshake record? (contentType 0x16, major version 3)
+        val isTlsRecord = (buffer[0].toInt() and 0xFF) == 0x16 &&
+                (buffer[1].toInt() and 0xFF) == 3
+        var target = if (isTlsRecord) {
+            val recordLen = ((buffer[3].toInt() and 0xFF) shl 8) or (buffer[4].toInt() and 0xFF)
+            (5 + recordLen).coerceAtMost(cap)
+        } else {
+            5
+        }
+
+        if (target > buffer.size) buffer = buffer.copyOf(target)
+
+        // Read up to the target length; for non-TLS traffic this loop does not
+        // run (target == 5), so we simply forward whatever arrived first.
+        while (bytesRead < target) {
+            val n = input.read(buffer, bytesRead, target - bytesRead)
+            if (n < 0) break
+            bytesRead += n
+        }
+
+        // For non-TLS first packets, opportunistically drain what is already
+        // available without blocking, so nothing gets truncated.
+        if (!isTlsRecord) {
+            while (input.available() > 0 && bytesRead < buffer.size) {
+                val n = input.read(buffer, bytesRead, buffer.size - bytesRead)
+                if (n < 0) break
+                bytesRead += n
+            }
+        }
+
+        return Pair(buffer, bytesRead)
     }
 
     private fun pipe(input: InputStream, output: OutputStream, isRx: Boolean) {

@@ -39,7 +39,7 @@ import net.steampp.wattkit.ui.cupertino.*
 fun AuthenticatorScreen() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val storage = remember { AccountStorage(context) }
+    val storage = remember { AccountStorage.get(context) }
     var accounts by remember { mutableStateOf(storage.getAccounts()) }
     var selectedIndex by remember { mutableIntStateOf(0) }
     var showManualAddDialog by remember { mutableStateOf(false) }
@@ -53,9 +53,11 @@ fun AuthenticatorScreen() {
     // Auto-create demo account if list is empty
     LaunchedEffect(Unit) {
         if (accounts.isEmpty()) {
+            // Placeholder demo account so the UI is not empty on first launch;
+            // the secret is a dummy value - replace it with your real .maFile.
             val demo = SteamAccount(
                 id = "demo_account",
-                accountName = "SteamPlayer",
+                accountName = "SteamPlayer (示例)",
                 sharedSecret = "gU1+wY9vGf5k5a1l2x3y4z5w6e7="
             )
             storage.addAccount(demo)

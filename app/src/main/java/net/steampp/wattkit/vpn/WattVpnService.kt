@@ -115,7 +115,7 @@ class WattVpnService : VpnService() {
                 "--socks-server-addr", "127.0.0.1:28282",
                 "--tunmtu", "1500",
                 "--sock-path", sockFile!!.absolutePath,
-                "--loglevel", "debug"
+                "--loglevel", "warning"
             )
 
             Log.i(tag, "Spawning tun2socks: ${cmd.joinToString(" ")}")
@@ -217,6 +217,16 @@ class WattVpnService : VpnService() {
         stopVpn()
         serviceScope.cancel()
         super.onDestroy()
+    }
+
+    /**
+     * Called when the system revokes the VPN permission (e.g. another VPN app
+     * takes over, or the user disables it in system settings). Without this,
+     * the TUN fd dies but the foreground service and tun2socks process linger.
+     */
+    override fun onRevoke() {
+        Log.w(tag, "VPN permission revoked by system, shutting down")
+        stopVpn()
     }
 
     private fun startTrafficMonitor() {

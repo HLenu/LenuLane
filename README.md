@@ -27,7 +27,7 @@
   - 实时探测四大反向代理节点与官方 API（Steam 社区、Pixiv、Steam API、GitHub）的网络往返延迟与可用性。
 
 - 🚀 **16KB Page Size 原生内存对齐**
-  - C 原生 `libtun2socks.so` 针对 `arm64-v8a`、`armeabi-v7a`、`x86_64`、`x86` 全平台执行 `max-page-size=0x4000` 编译，原生兼容 Android 15 及更高版本，杜绝 ELF 对齐崩溃。
+  - C 原生 `libtun2socks.so` 针对 `arm64-v8a`、`armeabi-v7a`、`x86_64` 平台执行 `max-page-size=0x4000` 编译，原生兼容 Android 15 及更高版本，杜绝 ELF 对齐崩溃。
 
 ---
 
@@ -36,14 +36,27 @@
 ### 编译依赖
 - Android SDK 35 (API 35, Build Tools 35.0.0)
 - JDK 17+ (推荐 Eclipse Temurin 或 Azul Zulu JDK 21)
-- NDK 28.0+
+- NDK 28.0+（仅修改 `libtun2socks.so` 原生源码时需要）
+
+> 项目自带标准 Gradle Wrapper（8.9），克隆后无需安装 Gradle，`./gradlew` 会自动下载对应发行版。
+
+### 签名（可选）
+
+Release 默认回退使用 debug 签名。如需自定义签名，请设置以下环境变量：
+
+```bash
+export WATTKIT_STORE_FILE=/path/to/release.keystore
+export WATTKIT_STORE_PASSWORD=******
+export WATTKIT_KEY_ALIAS=your-alias
+export WATTKIT_KEY_PASSWORD=******
+```
 
 ### 本地构建 Release APK
 ```bash
 # 进入工程目录
 cd WattKit
 
-# 使用 Gradle 执行 Release 打包
+# 使用 Gradle Wrapper 执行 Release 打包（Windows 使用 gradlew.bat）
 ./gradlew assembleRelease
 ```
 编译产物位于 `app/build/outputs/apk/release/app-release.apk`。
