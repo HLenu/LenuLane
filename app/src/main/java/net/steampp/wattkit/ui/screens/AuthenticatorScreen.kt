@@ -649,7 +649,8 @@ fun AuthenticatorScreen() {
                     CupertinoSearchField(
                         value = inputName,
                         onValueChange = { inputName = it },
-                        placeholder = "例如: SteamPlayer"
+                        placeholder = "例如: SteamPlayer",
+                        showSearchIcon = false
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -659,7 +660,8 @@ fun AuthenticatorScreen() {
                     CupertinoSearchField(
                         value = inputSecret,
                         onValueChange = { inputSecret = it },
-                        placeholder = "输入 Base64 共享密钥"
+                        placeholder = "输入 Base64 共享密钥",
+                        showSearchIcon = false
                     )
                 }
             },
@@ -721,7 +723,8 @@ fun AuthenticatorScreen() {
                     CupertinoSearchField(
                         value = inputJson,
                         onValueChange = { inputJson = it },
-                        placeholder = "{\"shared_secret\":\"...\"} 或 otpauth://totp/..."
+                        placeholder = "{\"shared_secret\":\"...\"} 或 otpauth://totp/...",
+                        showSearchIcon = false
                     )
                 }
             },

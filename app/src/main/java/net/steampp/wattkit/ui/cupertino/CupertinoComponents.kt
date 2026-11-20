@@ -221,7 +221,8 @@ fun CupertinoSearchField(
     value: String,
     onValueChange: (String) -> Unit,
     placeholder: String = "搜索",
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showSearchIcon: Boolean = true
 ) {
     Box(
         modifier = modifier
@@ -229,20 +230,22 @@ fun CupertinoSearchField(
             .height(36.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(CupertinoColors.tertiarySystemFill)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 10.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Icon(
-                imageVector = Icons.Default.Search,
-                contentDescription = null,
-                tint = CupertinoColors.secondaryLabel,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
+            if (showSearchIcon) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = null,
+                    tint = CupertinoColors.secondaryLabel,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+            }
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,

@@ -682,7 +682,8 @@ fun AccelerationScreen(
                     CupertinoSearchField(
                         value = host,
                         onValueChange = { host = it },
-                        placeholder = "127.0.0.1 或局域网 IP"
+                        placeholder = "127.0.0.1 或局域网 IP",
+                        showSearchIcon = false
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -691,7 +692,8 @@ fun AccelerationScreen(
                     CupertinoSearchField(
                         value = portText,
                         onValueChange = { portText = it.filter { ch -> ch.isDigit() } },
-                        placeholder = "7890"
+                        placeholder = "7890",
+                        showSearchIcon = false
                     )
                 }
             },
@@ -912,7 +914,8 @@ fun AccelerationScreen(
                     CupertinoSearchField(
                         value = ruleName,
                         onValueChange = { ruleName = it },
-                        placeholder = "例如: HuggingFace"
+                        placeholder = "例如: HuggingFace",
+                        showSearchIcon = false
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -921,7 +924,8 @@ fun AccelerationScreen(
                     CupertinoSearchField(
                         value = domainText,
                         onValueChange = { domainText = it },
-                        placeholder = "例如: huggingface.co, *.hf.co"
+                        placeholder = "例如: huggingface.co, *.hf.co",
+                        showSearchIcon = false
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))

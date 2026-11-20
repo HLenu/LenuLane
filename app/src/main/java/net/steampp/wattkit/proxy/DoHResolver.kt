@@ -519,16 +519,17 @@ object DoHResolver {
         if (b0 == 198 && (b1 == 18 || b1 == 19)) return true
 
         // Known GFW DNS poison sinkhole ranges & hijacked third-party IPs
-        if (b0 == 104 && b1 == 244 && (b2 == 42 || b2 == 43)) return true // Spoofed Twitter IP
+        if (b0 == 104 && b1 == 244 && b2 in 40..47) return true // Spoofed Twitter AS13414 block
+        if (b0 == 199 && b1 == 16 && b2 in 156..159) return true // Spoofed Twitter block
         if (b0 == 199 && b1 == 59 && b2 in 148..151) return true
-        if (b0 == 199 && b1 == 96 && b2 == 57) return true
+        if (b0 == 199 && b1 == 96 && b2 in 56..63) return true // Spoofed Twitter AS35995 block
         if (b0 == 31 && b1 == 13 && b2 in 64..127) return true // Spoofed Meta IP
         if (b0 == 157 && b1 == 240) return true // Spoofed Meta IP
         if (b0 == 69 && b1 == 63 && b2 in 176..191) return true // Spoofed Meta AS32934 IP
         if (b0 == 69 && b1 == 171 && b2 in 224..255) return true
         if (b0 == 66 && b1 == 220 && b2 in 144..159) return true
-        if (b0 == 128 && b1 == 121 && b2 == 146) return true
-        if (b0 == 108 && b1 == 160 && b2 == 165) return true // Spoofed Dropbox IP
+        if (b0 == 128 && b1 == 121) return true // Spoofed Twitter/GFW block (incl. 128.121.243.x / .146.x)
+        if (b0 == 108 && b1 == 160 && b2 in 160..175) return true // Spoofed Dropbox/GFW block (incl. 108.160.169.x / .165.x)
         if (b0 == 103 && b1 == 252 && b2 == 115) return true // Spoofed Meta/Pixiv poison IP
         if (b0 == 103 && b1 == 97 && b2 == 176 && b3 == 73) return true // Hijacked domestic 103.97.176.73 for Pixiv
         if ((b0 == 46 && b1 == 82 && b2 == 174 && b3 == 68) ||
