@@ -3,6 +3,9 @@ package net.steampp.wattkit.proxy
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 
 enum class RuleCategory(val displayName: String) {
     ALL("全部"),
@@ -15,13 +18,43 @@ enum class RuleCategory(val displayName: String) {
     TOOLS("系统服务")
 }
 
+enum class AccelerationStrategy(val displayName: String, val badgeText: String) {
+    DOH_TLS_FRAGMENT("DoH 净网 + TLS SNI 分片直连", "TLS 分片"),
+    REVERSE_PROXY_MIRROR("反向代理镜像节点", "镜像节点"),
+    CLEAN_DNS_DIRECT("DoH 纯净 DNS 直连", "DoH 直连"),
+    UPSTREAM_PROXY("自定义上游代理转发", "上游代理");
+
+    companion object {
+        fun fromName(name: String?): AccelerationStrategy? =
+            entries.firstOrNull { it.name == name }
+    }
+}
+
+enum class RoutingMode(val displayName: String, val subtitle: String) {
+    SMART_SPLIT("智能规则分流 (Fake-IP)", "仅接管加速域名，国内与日常应用 100% 物理直连不断网"),
+    GLOBAL_TUN("全局 TUN 接管", "接管设备全部 IPv4 TCP/UDP 流量并按规则分流");
+
+    companion object {
+        fun fromName(name: String?): RoutingMode =
+            entries.firstOrNull { it.name == name } ?: SMART_SPLIT
+    }
+}
+
+data class UpstreamProxyConfig(
+    val enabled: Boolean = false,
+    val host: String = "127.0.0.1",
+    val port: Int = 7890,
+    val isSocks5: Boolean = true
+)
+
 data class AccelerationRule(
     val id: String,
     val name: String,
     val description: String,
     val category: RuleCategory,
     val domains: List<String>,
-    val targetHost: String?,
+    val strategy: AccelerationStrategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+    val mirrorHost: String? = null,
     val targetPort: Int = 443,
     val isEnabled: Boolean = true
 )
@@ -30,13 +63,33 @@ object RuleManager {
     private const val TAG = "RuleManager"
     private const val PREFS_NAME = "wattkit_rules"
     private const val KEY_DISABLED = "disabled_rule_ids"
+    private const val KEY_STRATEGIES = "rule_strategies_json"
+    private const val KEY_ROUTING_MODE = "routing_mode"
+    private const val KEY_DOH_PROVIDER = "doh_provider"
+    private const val KEY_TLS_FRAGMENT = "tls_fragment_enabled"
+    private const val KEY_UPSTREAM_ENABLED = "upstream_enabled"
+    private const val KEY_UPSTREAM_HOST = "upstream_host"
+    private const val KEY_UPSTREAM_PORT = "upstream_port"
+    private const val KEY_UPSTREAM_SOCKS5 = "upstream_socks5"
 
     private val lock = Any()
     private var prefs: SharedPreferences? = null
 
+    private val _routingMode = MutableStateFlow(RoutingMode.SMART_SPLIT)
+    val routingMode = _routingMode.asStateFlow()
+
+    private val _dohProvider = MutableStateFlow(DoHProvider.DNSPOD)
+    val dohProvider = _dohProvider.asStateFlow()
+
+    private val _tlsFragmentEnabled = MutableStateFlow(true)
+    val tlsFragmentEnabled = _tlsFragmentEnabled.asStateFlow()
+
+    private val _upstreamProxy = MutableStateFlow(UpstreamProxyConfig())
+    val upstreamProxy = _upstreamProxy.asStateFlow()
+
     // NOTE: domain patterns must be bare hostnames (optionally "*.example.com").
-    // SNI sniffing only ever sees a hostname, never a URL path, so patterns
-    // containing "/" (e.g. "www.google.com/recaptcha") can never match.
+    // Every rule uses verified DoH anti-pollution + RFC TLS record fragmentation by default,
+    // avoiding broken third-party certificates while remaining switchable per rule.
     val defaultRules = listOf(
         // ==================== 1. Steam 宇宙 ====================
         AccelerationRule(
@@ -45,9 +98,8 @@ object RuleManager {
             description = "加速 steamcommunity.com 社区主页、讨论区、个人资料、好友列表与库存",
             category = RuleCategory.STEAM,
             domains = listOf("steamcommunity.com", "www.steamcommunity.com"),
-            targetHost = "steamcommunity.rmbgame.net",
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+            mirrorHost = "steamcommunity.rmbgame.net"
         ),
         AccelerationRule(
             id = "steam_static",
@@ -64,9 +116,8 @@ object RuleManager {
                 "clan.cloudflare.steamstatic.com",
                 "shared.cloudflare.steamstatic.com"
             ),
-            targetHost = "steamstatic.rmbgame.net",
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+            mirrorHost = "steamstatic.rmbgame.net"
         ),
         AccelerationRule(
             id = "steam_store",
@@ -80,23 +131,20 @@ object RuleManager {
                 "login.steampowered.com",
                 "checkout.steampowered.com"
             ),
-            targetHost = "steamstore.rmbgame.net",
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+            mirrorHost = "steamstore.rmbgame.net"
         ),
         AccelerationRule(
             id = "steam_workshop",
             name = "Steam 创意工坊与广播",
-            description = "加速游戏创意工坊 Mod 订阅检索、官方公告页面与 Steam 游戏直播流",
+            description = "加速游戏创意工坊资源、游戏服务器状态与 Steam 游戏直播流",
             category = RuleCategory.STEAM,
             domains = listOf(
-                // workshop 页面本身走 steamcommunity.com，已由 steam_community 规则覆盖
                 "steamserver.net",
                 "steambroadcast.akamaized.net"
             ),
-            targetHost = "steamcommunity.rmbgame.net",
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+            mirrorHost = "steamcommunity.rmbgame.net"
         ),
 
         // ==================== 2. Pixiv 二次元插画 ====================
@@ -113,9 +161,8 @@ object RuleManager {
                 "source.pixiv.net",
                 "comic.pixiv.net"
             ),
-            targetHost = "pixiv.re",
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+            mirrorHost = "pixiv.re"
         ),
         AccelerationRule(
             id = "pixiv_images",
@@ -127,9 +174,8 @@ object RuleManager {
                 "s.pximg.net",
                 "source.pximg.net"
             ),
-            targetHost = "i.pixiv.re",
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+            mirrorHost = "i.pixiv.re"
         ),
         AccelerationRule(
             id = "pixiv_fanbox",
@@ -141,9 +187,8 @@ object RuleManager {
                 "www.fanbox.cc",
                 "booth.pm"
             ),
-            targetHost = "pixiv.re",
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+            mirrorHost = "pixiv.re"
         ),
 
         // ==================== 3. 游戏平台 ====================
@@ -160,9 +205,7 @@ object RuleManager {
                 "tracking.epicgames.com",
                 "unrealengine.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "ea_origin",
@@ -177,9 +220,7 @@ object RuleManager {
                 "signin.ea.com",
                 "accounts.ea.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "ubisoft_connect",
@@ -192,9 +233,7 @@ object RuleManager {
                 "connect.ubisoft.com",
                 "ubisoftconnect.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "rockstar_games",
@@ -206,9 +245,7 @@ object RuleManager {
                 "socialclub.rockstargames.com",
                 "prod.telemetry.ros.rockstargames.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "riot_games",
@@ -220,9 +257,7 @@ object RuleManager {
                 "auth.riotgames.com",
                 "clientconfig.rpg.riotgames.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "gog_galaxy",
@@ -234,9 +269,7 @@ object RuleManager {
                 "api.gog.com",
                 "auth.gog.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
 
         // ==================== 4. Mod 社区 ====================
@@ -251,9 +284,7 @@ object RuleManager {
                 "images.nexusmods.com",
                 "files.nexusmods.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "curseforge",
@@ -265,9 +296,7 @@ object RuleManager {
                 "api.curseforge.com",
                 "media.forgecdn.net"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
 
         // ==================== 5. 开发开源 ====================
@@ -284,9 +313,7 @@ object RuleManager {
                 "github.githubassets.com",
                 "objects.githubusercontent.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "gitlab",
@@ -297,9 +324,7 @@ object RuleManager {
                 "gitlab.com",
                 "about.gitlab.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
 
         // ==================== 6. 社交直播 ====================
@@ -315,9 +340,7 @@ object RuleManager {
                 "cdn.discordapp.com",
                 "status.discord.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "twitch",
@@ -330,9 +353,7 @@ object RuleManager {
                 "passport.twitch.tv",
                 "usher.ttvnw.net"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
         AccelerationRule(
             id = "spotify",
@@ -345,28 +366,21 @@ object RuleManager {
                 "i.scdn.co",
                 "audio-ak-spotify-com.akamaized.net"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         ),
 
         // ==================== 7. 系统服务 ====================
         AccelerationRule(
             id = "google_recaptcha",
             name = "Google reCAPTCHA 验证码",
-            description = "将谷歌人机验证码请求自动转发至国内可用通道 (www.recaptcha.net)",
+            description = "使用 DoH + TLS 分片或镜像节点加速 reCAPTCHA 验证码加载（仅匹配 recaptcha 域名）",
             category = RuleCategory.TOOLS,
             domains = listOf(
-                // SNI 层只能看到主机名，无法区分 URL 路径，因此把整个
-                // www.google.com 主机重定向到镜像站（该主机在国内本就不可达，
-                // 影响仅为搜索页等同样走该域名的流量）
-                "www.google.com",
                 "recaptcha.net",
                 "www.recaptcha.net"
             ),
-            targetHost = "www.recaptcha.net",
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
+            mirrorHost = "www.gstatic.cn"
         ),
         AccelerationRule(
             id = "onedrive",
@@ -378,9 +392,7 @@ object RuleManager {
                 "api.onedrive.com",
                 "skyapi.onedrive.live.com"
             ),
-            targetHost = null,
-            targetPort = 443,
-            isEnabled = true
+            strategy = AccelerationStrategy.DOH_TLS_FRAGMENT
         )
     )
 
@@ -389,19 +401,48 @@ object RuleManager {
     }
 
     /**
-     * Load persisted rule states. Must be called once from Application onCreate().
+     * Load persisted rule and engine configurations. Must be called once from Application.onCreate().
      */
     fun initialize(context: Context) {
-        prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val disabled = prefs?.getStringSet(KEY_DISABLED, emptySet()) ?: emptySet()
+        val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs = sp
+        val disabled = sp.getStringSet(KEY_DISABLED, emptySet()) ?: emptySet()
+        val strategyMap = parseStrategyMap(sp.getString(KEY_STRATEGIES, null))
+
         synchronized(lock) {
             for (i in allRules.indices) {
-                if (allRules[i].id in disabled) {
-                    allRules[i] = allRules[i].copy(isEnabled = false)
+                val r = allRules[i]
+                val enabled = r.id !in disabled
+                val customStrat = strategyMap[r.id]
+                val resolvedStrat = if (customStrat != null) {
+                    if (customStrat == AccelerationStrategy.REVERSE_PROXY_MIRROR && r.mirrorHost == null) {
+                        AccelerationStrategy.DOH_TLS_FRAGMENT
+                    } else {
+                        customStrat
+                    }
+                } else {
+                    r.strategy
                 }
+                allRules[i] = r.copy(isEnabled = enabled, strategy = resolvedStrat)
             }
         }
-        Log.i(TAG, "Loaded rule states: ${allRules.count { !it.isEnabled }} disabled")
+
+        _routingMode.value = RoutingMode.fromName(sp.getString(KEY_ROUTING_MODE, null))
+        val provider = DoHProvider.fromId(sp.getString(KEY_DOH_PROVIDER, null))
+        _dohProvider.value = provider
+        DoHResolver.activeProvider = provider
+        _tlsFragmentEnabled.value = sp.getBoolean(KEY_TLS_FRAGMENT, true)
+        _upstreamProxy.value = UpstreamProxyConfig(
+            enabled = sp.getBoolean(KEY_UPSTREAM_ENABLED, false),
+            host = sp.getString(KEY_UPSTREAM_HOST, "127.0.0.1") ?: "127.0.0.1",
+            port = sp.getInt(KEY_UPSTREAM_PORT, 7890),
+            isSocks5 = sp.getBoolean(KEY_UPSTREAM_SOCKS5, true)
+        )
+
+        Log.i(
+            TAG,
+            "Initialized: ${allRules.count { it.isEnabled }}/${allRules.size} rules enabled, mode=${_routingMode.value}, doh=${provider.id}"
+        )
     }
 
     fun setRuleEnabled(id: String, enabled: Boolean) {
@@ -412,6 +453,52 @@ object RuleManager {
             }
         }
         persistDisabledIds()
+    }
+
+    fun setRuleStrategy(id: String, strategy: AccelerationStrategy) {
+        synchronized(lock) {
+            val idx = allRules.indexOfFirst { it.id == id }
+            if (idx != -1) {
+                val rule = allRules[idx]
+                val safeStrategy = if (strategy == AccelerationStrategy.REVERSE_PROXY_MIRROR && rule.mirrorHost == null) {
+                    AccelerationStrategy.DOH_TLS_FRAGMENT
+                } else {
+                    strategy
+                }
+                allRules[idx] = rule.copy(strategy = safeStrategy)
+            }
+        }
+        persistStrategies()
+    }
+
+    fun setRoutingMode(mode: RoutingMode) {
+        _routingMode.value = mode
+        prefs?.edit()?.putString(KEY_ROUTING_MODE, mode.name)?.apply()
+    }
+
+    fun setDoHProvider(provider: DoHProvider) {
+        _dohProvider.value = provider
+        DoHResolver.activeProvider = provider
+        DoHResolver.clearCache()
+        prefs?.edit()?.putString(KEY_DOH_PROVIDER, provider.id)?.apply()
+    }
+
+    fun setTlsFragmentEnabled(enabled: Boolean) {
+        _tlsFragmentEnabled.value = enabled
+        prefs?.edit()?.putBoolean(KEY_TLS_FRAGMENT, enabled)?.apply()
+    }
+
+    fun setUpstreamProxy(config: UpstreamProxyConfig) {
+        val cleanHost = config.host.trim().ifEmpty { "127.0.0.1" }
+        val cleanPort = config.port.coerceIn(1, 65535)
+        val normalized = config.copy(host = cleanHost, port = cleanPort)
+        _upstreamProxy.value = normalized
+        prefs?.edit()
+            ?.putBoolean(KEY_UPSTREAM_ENABLED, normalized.enabled)
+            ?.putString(KEY_UPSTREAM_HOST, normalized.host)
+            ?.putInt(KEY_UPSTREAM_PORT, normalized.port)
+            ?.putBoolean(KEY_UPSTREAM_SOCKS5, normalized.isSocks5)
+            ?.apply()
     }
 
     fun isRuleEnabled(id: String): Boolean {
@@ -426,32 +513,22 @@ object RuleManager {
         }
     }
 
-    private fun persistDisabledIds() {
-        val disabledIds = synchronized(lock) {
-            allRules.filter { !it.isEnabled }.map { it.id }.toSet()
-        }
-        prefs?.edit()?.putStringSet(KEY_DISABLED, disabledIds)?.apply()
-    }
-
     /**
-     * Thread-safe snapshot used by the proxy IO threads.
-     * The compose state list is backed by snapshot state that must not be
-     * iterated concurrently from background threads while the UI mutates it.
+     * Thread-safe snapshot used by packet/proxy IO threads.
      */
     fun snapshotRules(): List<AccelerationRule> = synchronized(lock) {
         allRules.toList()
     }
 
-    fun findMatchingTarget(requestedHost: String, requestedPort: Int): Pair<String, Int>? {
-        val hostLower = requestedHost.lowercase().trimEnd('.')
+    fun findMatchingRule(requestedHost: String): AccelerationRule? {
+        val hostLower = requestedHost.lowercase().trim().trimEnd('.')
+        if (hostLower.isEmpty()) return null
         val rules = snapshotRules()
         for (rule in rules) {
             if (!rule.isEnabled) continue
             for (pattern in rule.domains) {
                 if (matchesDomain(hostLower, pattern)) {
-                    val destHost = rule.targetHost ?: requestedHost
-                    val destPort = if (rule.targetHost != null) rule.targetPort else requestedPort
-                    return Pair(destHost, destPort)
+                    return rule
                 }
             }
         }
@@ -459,10 +536,46 @@ object RuleManager {
     }
 
     private fun matchesDomain(host: String, pattern: String): Boolean {
-        if (pattern.startsWith("*.")) {
-            val root = pattern.substring(2)
+        val pat = pattern.lowercase().trimEnd('.')
+        if (pat.startsWith("*.")) {
+            val root = pat.substring(2)
             return host == root || host.endsWith(".$root")
         }
-        return host == pattern || host.endsWith(".$pattern")
+        return host == pat || host.endsWith(".$pat")
+    }
+
+    private fun persistDisabledIds() {
+        val disabledIds = synchronized(lock) {
+            allRules.filter { !it.isEnabled }.map { it.id }.toSet()
+        }
+        prefs?.edit()?.putStringSet(KEY_DISABLED, disabledIds)?.apply()
+    }
+
+    private fun persistStrategies() {
+        val json = JSONObject()
+        synchronized(lock) {
+            for (rule in allRules) {
+                json.put(rule.id, rule.strategy.name)
+            }
+        }
+        prefs?.edit()?.putString(KEY_STRATEGIES, json.toString())?.apply()
+    }
+
+    private fun parseStrategyMap(raw: String?): Map<String, AccelerationStrategy> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return try {
+            val json = JSONObject(raw)
+            val result = mutableMapOf<String, AccelerationStrategy>()
+            val keys = json.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                AccelerationStrategy.fromName(json.optString(id))?.let {
+                    result[id] = it
+                }
+            }
+            result
+        } catch (_: Exception) {
+            emptyMap()
+        }
     }
 }

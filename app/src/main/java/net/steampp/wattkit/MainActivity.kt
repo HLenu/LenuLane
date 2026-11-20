@@ -37,6 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import net.steampp.wattkit.ui.cupertino.CupertinoColors
 import net.steampp.wattkit.ui.cupertino.liquidGlass
 import net.steampp.wattkit.ui.screens.AccelerationScreen
@@ -78,7 +79,7 @@ fun WattKitCupertinoApp() {
             val intent = Intent(context, WattVpnService::class.java).apply {
                 action = WattVpnService.ACTION_START
             }
-            context.startService(intent)
+            ContextCompat.startForegroundService(context, intent)
         } else {
             Toast.makeText(context, "VPN 授权已取消，加速未能启动", Toast.LENGTH_SHORT).show()
         }
@@ -98,8 +99,17 @@ fun WattKitCupertinoApp() {
                 val intent = Intent(context, WattVpnService::class.java).apply {
                     action = WattVpnService.ACTION_START
                 }
-                context.startService(intent)
+                ContextCompat.startForegroundService(context, intent)
             }
+        }
+    }
+
+    fun restartVpn() {
+        if (isVpnRunning) {
+            val intent = Intent(context, WattVpnService::class.java).apply {
+                action = WattVpnService.ACTION_RESTART
+            }
+            context.startService(intent)
         }
     }
 
@@ -144,7 +154,8 @@ fun WattKitCupertinoApp() {
                 )
                 1 -> AccelerationScreen(
                     isVpnRunning = isVpnRunning,
-                    onToggleVpn = { toggleVpn() }
+                    onToggleVpn = { toggleVpn() },
+                    onRestartVpn = { restartVpn() }
                 )
                 2 -> AuthenticatorScreen()
                 3 -> SettingsScreen()

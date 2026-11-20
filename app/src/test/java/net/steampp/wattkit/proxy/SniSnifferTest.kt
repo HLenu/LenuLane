@@ -8,6 +8,14 @@ class SniSnifferTest {
         check(SniSniffer.sniffSni(packet, packet.size) == "steamcommunity.com")
     }
 
+    @Test fun locateSniRangePointsToExactHostnameBytes() {
+        val packet = clientHello(extension(43, byteArrayOf(3, 4)) + serverName("store.steampowered.com"))
+        val range = SniSniffer.locateSniRange(packet, packet.size)
+        check(range != null)
+        val extracted = String(packet, range.first, range.last - range.first + 1, Charsets.US_ASCII)
+        check(extracted == "store.steampowered.com") { "got $extracted" }
+    }
+
     @Test fun skipsUnknownExtensions() {
         val packet = clientHello(extension(43, byteArrayOf(3, 4)) + serverName("github.com"))
         check(SniSniffer.sniffSni(packet, packet.size) == "github.com")

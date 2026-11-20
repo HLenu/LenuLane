@@ -7,36 +7,50 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.steampp.wattkit.MainActivity
 import net.steampp.wattkit.R
+import net.steampp.wattkit.proxy.DoHResolver
 import net.steampp.wattkit.proxy.LocalProxyServer
-import java.io.File
+import net.steampp.wattkit.proxy.RoutingMode
+import net.steampp.wattkit.proxy.RuleManager
+import androidx.core.app.NotificationCompat
+import java.net.Inet4Address
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 class WattVpnService : VpnService() {
     private val tag = "WattVpnService"
+    private val lifecycleLock = Any()
+
     private var vpnInterface: ParcelFileDescriptor? = null
-    private var tun2socksProcess: java.lang.Process? = null
+    private var tunEngine: TunPacketEngine? = null
     private var proxyServer: LocalProxyServer? = null
-    private var sockFile: File? = null
+    private var fakeIpPool: FakeIpPool? = null
+    private var smartDnsEngine: SmartDnsEngine? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private val physicalNetworks = ConcurrentHashMap<Network, NetworkCapabilities>()
+
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var trafficJob: Job? = null
 
     companion object {
         const val ACTION_START = "net.steampp.wattkit.vpn.START"
         const val ACTION_STOP = "net.steampp.wattkit.vpn.STOP"
+        const val ACTION_RESTART = "net.steampp.wattkit.vpn.RESTART"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "wattkit_vpn_channel"
 
@@ -51,182 +65,282 @@ class WattVpnService : VpnService() {
 
         private val _txSpeed = MutableStateFlow("0.0 KB/s")
         val txSpeed = _txSpeed.asStateFlow()
+
+        private val _networkStatus = MutableStateFlow("未启动")
+        val networkStatus = _networkStatus.asStateFlow()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> startVpn()
-            ACTION_STOP -> stopVpn()
+            ACTION_STOP -> stopVpn(stopService = true)
+            ACTION_RESTART -> {
+                if (_isRunning.value) {
+                    stopVpn(stopService = false)
+                    startVpn()
+                }
+            }
         }
         return START_NOT_STICKY
     }
 
     private fun startVpn() {
-        if (_isRunning.value) return
-        Log.i(tag, "Starting WattKit VPN Service...")
+        synchronized(lifecycleLock) {
+            if (_isRunning.value) return
+            val mode = RuleManager.routingMode.value
+            Log.i(tag, "Starting WattKit VPN Service (mode=$mode)...")
 
-        try {
-            createNotificationChannel()
-            val notification = createNotification()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
-
-            // 1. Start local Kotlin SOCKS5 proxy
-            proxyServer = LocalProxyServer(port = 28282, vpnService = this).apply {
-                start()
-            }
-
-            // 2. Establish TUN interface
-            val builder = Builder()
-                .setSession("WattKit Acceleration")
-                .addAddress("10.0.0.2", 24)
-                .addRoute("0.0.0.0", 0)
-                .setMtu(1500)
-
-            // Disallow WattKit itself from VPN loopback
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                builder.addDisallowedApplication(packageName)
-            }
-
-            vpnInterface = builder.establish()
-            if (vpnInterface == null) {
-                Log.e(tag, "Failed to establish VPN interface")
-                stopVpn()
-                return
-            }
-
-            // 3. Prepare UNIX domain socket path for FD passing
-            val sockDir = cacheDir
-            sockFile = File(sockDir, "tun2socks.sock").apply {
-                if (exists()) delete()
-            }
-
-            // 4. Launch 16KB native tun2socks process
-            val nativeLibDir = applicationInfo.nativeLibraryDir
-            val tun2socksBin = File(nativeLibDir, "libtun2socks.so").absolutePath
-
-            val cmd = listOf(
-                tun2socksBin,
-                "--netif-ipaddr", "10.0.0.2",
-                "--netif-netmask", "255.255.255.0",
-                "--socks-server-addr", "127.0.0.1:28282",
-                "--tunmtu", "1500",
-                "--sock-path", sockFile!!.absolutePath,
-                "--loglevel", "warning"
-            )
-
-            Log.i(tag, "Spawning tun2socks: ${cmd.joinToString(" ")}")
-            val proc = ProcessBuilder(cmd)
-                .redirectErrorStream(true)
-                .start()
-            tun2socksProcess = proc
-
-            // Monitor tun2socks output
-            Thread {
-                try {
-                    proc.inputStream.bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            Log.d("tun2socks", line)
-                        }
-                    }
-                    val exit = proc.waitFor()
-                    Log.w(tag, "tun2socks exited with code $exit")
-                } catch (e: Exception) {
-                    Log.e(tag, "tun2socks read error", e)
-                }
-            }.start()
-
-            // 5. Send TUN FileDescriptor via LocalSocket
-            val fd = vpnInterface!!.fileDescriptor
-            Thread {
-                var connected = false
-                val targetPath = sockFile!!.absolutePath
-                val localSocket = LocalSocket()
-                for (i in 0 until 60) {
-                    try {
-                        localSocket.connect(
-                            LocalSocketAddress(targetPath, LocalSocketAddress.Namespace.FILESYSTEM)
-                        )
-                        connected = true
-                        break
-                    } catch (_: Exception) {
-                        try { Thread.sleep(50) } catch (_: InterruptedException) {}
-                    }
-                }
-
-                if (connected) {
-                    try {
-                        localSocket.setFileDescriptorsForSend(arrayOf(fd))
-                        localSocket.outputStream.write(42)
-                        localSocket.outputStream.flush()
-                        localSocket.close()
-                        Log.i(tag, "TUN file descriptor passed to tun2socks successfully")
-                    } catch (e: Exception) {
-                        Log.e(tag, "Failed to send fd over local socket", e)
-                    }
+            try {
+                createNotificationChannel()
+                val notification = createNotification(mode)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
                 } else {
-                    Log.e(tag, "Timed out waiting for tun2socks socket: $targetPath")
+                    startForeground(NOTIFICATION_ID, notification)
                 }
-            }.start()
 
-            _startTime.value = System.currentTimeMillis()
-            _isRunning.value = true
-            startTrafficMonitor()
-            Log.i(tag, "WattKit VPN successfully started and running.")
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to start VPN", e)
-            stopVpn()
+                // Bind DoH resolver protection callbacks so HTTPS DoH queries bypass tun0
+                DoHResolver.setVpnProtectCallbacks(
+                    tcpProtect = { sock -> protect(sock) },
+                    udpProtect = { sock -> protect(sock) }
+                )
+
+                // 1. Initialize in-process Fake-IP pool & Smart DNS engine
+                val pool = FakeIpPool().also { fakeIpPool = it }
+                val dnsEngine = SmartDnsEngine(
+                    fakeIpPool = pool,
+                    protectUdp = { sock -> protect(sock) }
+                ).also { smartDnsEngine = it }
+
+                // 2. Seed physical DNS servers and underlying network BEFORE establishing TUN
+                seedInitialPhysicalNetwork(dnsEngine)
+                registerPhysicalNetworkCallback(dnsEngine)
+
+                // 3. Configure and establish TUN interface (10.0.0.1 virtual DNS)
+                vpnInterface = configureAndEstablishTun(mode)
+                if (vpnInterface == null) {
+                    Log.e(tag, "Failed to establish VPN interface")
+                    stopVpn(stopService = true)
+                    return
+                }
+
+                // 4. Start in-process pure-Kotlin TUN packet engine
+                tunEngine = TunPacketEngine(
+                    vpnInterface = vpnInterface!!,
+                    smartDnsEngine = dnsEngine,
+                    fakeIpPool = pool,
+                    protectTcp = { sock -> protect(sock) },
+                    protectUdp = { sock -> protect(sock) }
+                ).apply { start() }
+
+                // 5. Start local SOCKS5/HTTP CONNECT listener for auxiliary/manual tools
+                proxyServer = LocalProxyServer(port = 28282, vpnService = this).apply {
+                    start()
+                }
+
+                _startTime.value = System.currentTimeMillis()
+                _isRunning.value = true
+                startTrafficMonitor()
+                Log.i(tag, "WattKit VPN started cleanly with in-process TunPacketEngine ($mode)")
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to start VPN", e)
+                stopVpn(stopService = true)
+            }
         }
     }
 
-    private fun stopVpn() {
-        Log.i(tag, "Stopping WattKit VPN Service...")
-        _isRunning.value = false
-        trafficJob?.cancel()
-        trafficJob = null
-        _startTime.value = 0L
-        _rxSpeed.value = "0.0 KB/s"
-        _txSpeed.value = "0.0 KB/s"
+    private fun configureAndEstablishTun(mode: RoutingMode): ParcelFileDescriptor? {
+        val builder = Builder()
+            .setSession("WattKit Acceleration")
+            .addAddress("10.0.0.2", 24)
+            .addDnsServer("10.0.0.1")
+            .setMtu(1500)
 
-        try {
-            tun2socksProcess?.destroy()
-        } catch (_: Exception) {}
-        tun2socksProcess = null
-
-        sockFile?.let {
-            if (it.exists()) it.delete()
+        when (mode) {
+            RoutingMode.SMART_SPLIT -> {
+                // Only intercept virtual DNS (10.0.0.1/32) and Fake-IP subnet (198.18.0.0/15).
+                // Unmatched domains receive real public IPs and bypass tun0 over physical Wi-Fi/5G.
+                builder.addRoute("10.0.0.1", 32)
+                builder.addRoute("198.18.0.0", 15)
+            }
+            RoutingMode.GLOBAL_TUN -> {
+                builder.addRoute("0.0.0.0", 0)
+            }
         }
-        sockFile = null
 
-        proxyServer?.stop()
-        proxyServer = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            builder.setMetered(false)
+        }
+        return builder.establish()
+    }
 
+    private fun seedInitialPhysicalNetwork(dnsEngine: SmartDnsEngine) {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        @Suppress("DEPRECATION")
+        val networks = cm.allNetworks
+        var preferred: Network? = null
+        val collectedDns = mutableListOf<String>()
+
+        for (net in networks) {
+            val caps = cm.getNetworkCapabilities(net) ?: continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
+            physicalNetworks[net] = caps
+            if (preferred == null || caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                preferred = net
+            }
+            cm.getLinkProperties(net)?.let { lp ->
+                collectedDns.addAll(extractIpv4Dns(lp))
+            }
+        }
+
+        if (collectedDns.isNotEmpty()) {
+            dnsEngine.updateUpstreamServers(collectedDns)
+        }
+        if (preferred != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+            setUnderlyingNetworks(arrayOf(preferred))
+            _networkStatus.value = formatNetworkLabel(physicalNetworks[preferred])
+        } else {
+            _networkStatus.value = "物理网络就绪"
+        }
+    }
+
+    private fun registerPhysicalNetworkCallback(dnsEngine: SmartDnsEngine) {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        unregisterNetworkCallbackLocked()
+
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val caps = cm.getNetworkCapabilities(network) ?: return
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                physicalNetworks[network] = caps
+                applyPhysicalNetworkChange(cm, dnsEngine)
+            }
+
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                if (networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                physicalNetworks[network] = networkCapabilities
+                applyPhysicalNetworkChange(cm, dnsEngine)
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                val caps = cm.getNetworkCapabilities(network) ?: return
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return
+                dnsEngine.updateUpstreamServers(extractIpv4Dns(linkProperties))
+            }
+
+            override fun onLost(network: Network) {
+                physicalNetworks.remove(network)
+                if (physicalNetworks.isEmpty()) {
+                    _networkStatus.value = "等待物理网络恢复..."
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                        setUnderlyingNetworks(null)
+                    }
+                } else {
+                    applyPhysicalNetworkChange(cm, dnsEngine)
+                }
+            }
+        }
+
+        networkCallback = cb
         try {
-            vpnInterface?.close()
-        } catch (_: Exception) {}
-        vpnInterface = null
+            cm.registerNetworkCallback(request, cb)
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to register physical network callback: ${e.message}")
+        }
+    }
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+    private fun applyPhysicalNetworkChange(cm: ConnectivityManager, dnsEngine: SmartDnsEngine) {
+        val activeEntry = physicalNetworks.entries.firstOrNull {
+            it.value.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        } ?: physicalNetworks.entries.firstOrNull()
+
+        if (activeEntry != null) {
+            val net = activeEntry.key
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                setUnderlyingNetworks(arrayOf(net))
+            }
+            cm.getLinkProperties(net)?.let { lp ->
+                dnsEngine.updateUpstreamServers(extractIpv4Dns(lp))
+            }
+            DoHResolver.clearCache()
+            _networkStatus.value = formatNetworkLabel(activeEntry.value)
+        }
+    }
+
+    private fun unregisterNetworkCallbackLocked() {
+        val cb = networkCallback ?: return
+        networkCallback = null
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.unregisterNetworkCallback(cb)
+        } catch (_: Exception) {}
+        physicalNetworks.clear()
+    }
+
+    private fun extractIpv4Dns(lp: LinkProperties): List<String> =
+        lp.dnsServers.filterIsInstance<Inet4Address>()
+            .mapNotNull { it.hostAddress }
+            .filter { it != "10.0.0.1" && !it.startsWith("127.") }
+
+    private fun formatNetworkLabel(caps: NetworkCapabilities?): String {
+        if (caps == null) return "物理网络已连接"
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi 物理网络正常"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "蜂窝数据网络正常"
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "以太网连接正常"
+            else -> "物理网络已连接"
+        }
+    }
+
+    private fun stopVpn(stopService: Boolean) {
+        synchronized(lifecycleLock) {
+            Log.i(tag, "Stopping WattKit VPN Service...")
+            _isRunning.value = false
+            trafficJob?.cancel()
+            trafficJob = null
+            _startTime.value = 0L
+            _rxSpeed.value = "0.0 KB/s"
+            _txSpeed.value = "0.0 KB/s"
+            _networkStatus.value = "未启动"
+
+            unregisterNetworkCallbackLocked()
+            DoHResolver.setVpnProtectCallbacks(null, null)
+
+            try { tunEngine?.stop() } catch (_: Exception) {}
+            tunEngine = null
+
+            try { proxyServer?.stop() } catch (_: Exception) {}
+            proxyServer = null
+
+            fakeIpPool?.clear()
+            fakeIpPool = null
+            smartDnsEngine = null
+
+            try { vpnInterface?.close() } catch (_: Exception) {}
+            vpnInterface = null
+
+            if (stopService) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
     }
 
     override fun onDestroy() {
-        stopVpn()
+        stopVpn(stopService = false)
         serviceScope.cancel()
         super.onDestroy()
     }
 
-    /**
-     * Called when the system revokes the VPN permission (e.g. another VPN app
-     * takes over, or the user disables it in system settings). Without this,
-     * the TUN fd dies but the foreground service and tun2socks process linger.
-     */
     override fun onRevoke() {
         Log.w(tag, "VPN permission revoked by system, shutting down")
-        stopVpn()
+        stopVpn(stopService = true)
     }
 
     private fun startTrafficMonitor() {
@@ -288,7 +402,7 @@ class WattVpnService : VpnService() {
         }
     }
 
-    private fun createNotification(): Notification {
+    private fun createNotification(mode: RoutingMode): Notification {
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
@@ -297,8 +411,8 @@ class WattVpnService : VpnService() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("WattKit 网络加速中")
-            .setContentText("Steam 社区与 GitHub 规则加速正常运行")
+            .setContentTitle("WattKit 加速引擎运行中")
+            .setContentText("${mode.displayName} · 启用 ${RuleManager.getEnabledCount()} 条规则")
             .setSmallIcon(R.drawable.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)

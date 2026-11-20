@@ -1,13 +1,13 @@
 package net.steampp.wattkit.ui.screens
 
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -16,7 +16,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -25,25 +24,11 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.steampp.wattkit.proxy.*
 import net.steampp.wattkit.ui.cupertino.*
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.concurrent.TimeUnit
-
-data class DiagnosticTarget(
-    val name: String,
-    val url: String,
-    val hostOverride: String? = null,
-    val isPost: Boolean = false
-)
-
-data class DiagnosticResult(
-    val target: DiagnosticTarget,
-    val latencyMs: Long,
-    val isSuccess: Boolean,
-    val message: String
-)
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun SettingsScreen() {
@@ -51,79 +36,34 @@ fun SettingsScreen() {
     val coroutineScope = rememberCoroutineScope()
     var isPinging by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<DiagnosticResult>>(emptyList()) }
-
-    val targets = remember {
-        listOf(
-            DiagnosticTarget(
-                name = "Steam 社区反代节点",
-                url = "https://steamcommunity.rmbgame.net",
-                hostOverride = "steamcommunity.com"
-            ),
-            DiagnosticTarget(
-                name = "Pixiv 插画加速节点",
-                url = "https://i.pixiv.re"
-            ),
-            DiagnosticTarget(
-                name = "Steam 官方令牌服务",
-                url = "https://api.steampowered.com/ITwoFactorService/QueryTime/v0001/",
-                isPost = true
-            ),
-            DiagnosticTarget(
-                name = "GitHub 开发者网络",
-                url = "https://api.github.com"
-            )
-        )
-    }
+    var hostsResult by remember { mutableStateOf<HostsInspectionResult?>(null) }
+    val recentConnections by TrafficTelemetry.recentConnections.collectAsState()
+    val targets = remember { NetworkDiagnostics.defaultTargets }
+    val timeFormatter = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
 
     fun runDiagnostics() {
         if (isPinging) return
         isPinging = true
         coroutineScope.launch {
-            val list = withContext(Dispatchers.IO) {
-                val client = OkHttpClient.Builder()
-                    .connectTimeout(5, TimeUnit.SECONDS)
-                    .readTimeout(5, TimeUnit.SECONDS)
-                    .hostnameVerifier { _, _ -> true }
-                    .build()
-
-                targets.map { target ->
-                    val start = System.currentTimeMillis()
-                    try {
-                        val reqBuilder = Request.Builder()
-                            .url(target.url)
-                            .header("User-Agent", "WattKit/1.0.0")
-
-                        if (target.hostOverride != null) {
-                            reqBuilder.header("Host", target.hostOverride)
-                        }
-
-                        if (target.isPost) {
-                            reqBuilder.post(okhttp3.FormBody.Builder().add("steamid", "0").build())
-                        }
-
-                        client.newCall(reqBuilder.build()).execute().use { resp ->
-                            val latency = System.currentTimeMillis() - start
-                            DiagnosticResult(
-                                target = target,
-                                latencyMs = latency,
-                                isSuccess = resp.isSuccessful,
-                                message = "HTTP ${resp.code}"
-                            )
-                        }
-                    } catch (e: Exception) {
-                        val latency = System.currentTimeMillis() - start
-                        DiagnosticResult(
-                            target = target,
-                            latencyMs = latency,
-                            isSuccess = false,
-                            message = e.javaClass.simpleName
-                        )
-                    }
-                }
-            }
+            val list = NetworkDiagnostics.runFullPipelineProbe(targets)
             results = list
             isPinging = false
-            Toast.makeText(context, "网络雷达探测已完成", Toast.LENGTH_SHORT).show()
+            val okCount = list.count { it.isSuccess }
+            Toast.makeText(
+                context,
+                "全链路探测完成: $okCount/${list.size} 个目标通过严格 TLS 校验",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    fun scanHosts() {
+        coroutineScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                NetworkDiagnostics.inspectSystemHosts()
+            }
+            hostsResult = res
+            Toast.makeText(context, res.summary, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -136,22 +76,30 @@ fun SettingsScreen() {
         item {
             Spacer(modifier = Modifier.height(12.dp))
             CupertinoPageHeader(
-                title = "工具与设置",
-                subtitle = "网络连通性雷达探针与系统底层运行规范"
+                title = "工具与诊断",
+                subtitle = "真实加速链路雷达 · 严格系统 CA 验证与实时命中日志"
             )
         }
 
-        // Section 1: Network Radar Diagnostic Probe
+        // Section 1: Real Full-Pipeline Diagnostic Radar
         item {
             CupertinoSection(
-                title = "网络连通性雷达",
-                footer = "测试客户端到达各个国内外反代服务节点与 API 的端到端响应延迟。"
+                title = "全链路加速雷达 (DoH + TLS 分片 + 严格证书校验)",
+                footer = "每项探测均经 DoH 解析真实 IP 并执行 RFC TLS 记录分片，使用 Android 系统信任链严格校验证书。"
             ) {
-                targets.forEachIndexed { index, target ->
-                    val res = results.find { it.target.name == target.name }
+                targets.forEach { target ->
+                    val res = results.find { it.target.id == target.id }
+                    val subtitleText = if (res == null) {
+                        target.url
+                    } else if (res.isSuccess) {
+                        "${res.dnsSource} -> ${res.resolvedIp} · ${res.tlsProtocol} (${res.certSubject})"
+                    } else {
+                        "${res.dnsSource} -> ${res.resolvedIp} · ${res.message}"
+                    }
+
                     CupertinoCell(
                         title = target.name,
-                        subtitle = target.url,
+                        subtitle = subtitleText,
                         icon = Icons.Default.WifiTethering,
                         iconBackgroundColor = when {
                             res == null -> CupertinoColors.systemGray3
@@ -167,22 +115,29 @@ fun SettingsScreen() {
                                     color = CupertinoColors.tertiaryLabel
                                 )
                             } else {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(
-                                                if (res.isSuccess) CupertinoColors.systemGreen else CupertinoColors.systemRed
-                                            )
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(7.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    if (res.isSuccess) CupertinoColors.systemGreen else CupertinoColors.systemRed
+                                                )
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text(
+                                            text = "${res.latencyMs} ms",
+                                            fontSize = 13.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (res.isSuccess) CupertinoColors.label else CupertinoColors.systemRed
+                                        )
+                                    }
                                     Text(
-                                        text = "${res.latencyMs} ms",
-                                        fontSize = 13.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (res.isSuccess) CupertinoColors.label else CupertinoColors.systemRed
+                                        text = if (res.httpCode > 0) "HTTP ${res.httpCode}" else "失败",
+                                        fontSize = 10.sp,
+                                        color = CupertinoColors.secondaryLabel
                                     )
                                 }
                             }
@@ -190,7 +145,6 @@ fun SettingsScreen() {
                     )
                 }
 
-                // Radar trigger button
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -207,7 +161,7 @@ fun SettingsScreen() {
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "正在探测各个加速节点...",
+                                text = "正在并发探测全部链路节点...",
                                 fontSize = 14.sp,
                                 color = CupertinoColors.systemBlue
                             )
@@ -222,7 +176,7 @@ fun SettingsScreen() {
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "开始雷达连通性探测",
+                                text = "执行真实全链路探测",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = CupertinoColors.systemBlue
@@ -235,20 +189,108 @@ fun SettingsScreen() {
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Section 2: Extended Toolbox
+        // Section 2: Live Connection & Rule Hit Logs
+        item {
+            CupertinoSection(
+                title = "实时连接与规则命中日志 (最近 ${recentConnections.size} 条)",
+                footer = "展示通过 TUN 或本地代理建立的真实转发连接、策略与毫秒级耗时。"
+            ) {
+                if (recentConnections.isEmpty()) {
+                    CupertinoCell(
+                        title = "暂无连接记录",
+                        subtitle = "开启加速并访问 Steam / Pixiv / GitHub，或执行上方链路探测后显示",
+                        icon = Icons.Default.Timeline,
+                        iconBackgroundColor = CupertinoColors.systemGray3,
+                        showDivider = true
+                    )
+                } else {
+                    recentConnections.take(15).forEach { entry ->
+                        val timeText = timeFormatter.format(Date(entry.timestampMs))
+                        val totalBytes = entry.rxBytes + entry.txBytes
+                        val byteLabel = if (totalBytes >= 1024L) {
+                            String.format(Locale.US, "%.1fKB", totalBytes / 1024.0)
+                        } else {
+                            "${totalBytes}B"
+                        }
+                        CupertinoCell(
+                            title = entry.host,
+                            subtitle = "$timeText · ${entry.ruleName} [${entry.strategyBadge}] -> ${entry.targetIp}",
+                            icon = Icons.Default.SwapVert,
+                            iconBackgroundColor = when (entry.status) {
+                                "ACTIVE" -> CupertinoColors.systemBlue
+                                "OK" -> CupertinoColors.systemGreen
+                                else -> CupertinoColors.systemRed
+                            },
+                            showDivider = true,
+                            trailingContent = {
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        text = "${entry.latencyMs}ms",
+                                        fontSize = 12.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = CupertinoColors.label
+                                    )
+                                    Text(
+                                        text = "$byteLabel · ${entry.status}",
+                                        fontSize = 10.sp,
+                                        color = CupertinoColors.secondaryLabel
+                                    )
+                                }
+                            }
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            TrafficTelemetry.reset()
+                            DoHResolver.clearCache()
+                            Toast.makeText(context, "已清空连接日志与 DoH 缓存", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(vertical = 11.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "清空日志与 DoH DNS 缓存",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = CupertinoColors.systemRed
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Section 3: System Tools (Real /system/etc/hosts inspector)
         item {
             CupertinoSection(
                 title = "实用工具箱",
-                footer = "一键排查系统 Hosts 污染，保障本地免证书反向代理环境纯净。"
+                footer = hostsResult?.flaggedEntries?.takeIf { it.isNotEmpty() }
+                    ?.joinToString("\n", prefix = "冲突明细:\n")
+                    ?: "真实读取设备 Hosts 文件，排查 Steam/Pixiv/GitHub 历史静态映射冲突。"
             ) {
                 CupertinoCell(
-                    title = "本地 Hosts 冲突净化",
-                    subtitle = "一键清理历史冲突与污染条目",
-                    icon = Icons.Default.CleaningServices,
-                    iconBackgroundColor = CupertinoColors.systemOrange,
+                    title = "系统 Hosts 文件核查",
+                    subtitle = hostsResult?.summary ?: "点击扫描 /system/etc/hosts 实际条目",
+                    icon = Icons.Default.FindInPage,
+                    iconBackgroundColor = if ((hostsResult?.flaggedEntries?.size ?: 0) > 0) {
+                        CupertinoColors.systemOrange
+                    } else {
+                        CupertinoColors.systemTeal
+                    },
                     showDivider = false,
-                    onClick = {
-                        Toast.makeText(context, "本地环境 Hosts 正常，无残留污染条目", Toast.LENGTH_SHORT).show()
+                    onClick = { scanHosts() },
+                    trailingContent = {
+                        Text(
+                            text = if (hostsResult == null) "扫描" else "重扫",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = CupertinoColors.systemBlue
+                        )
                     }
                 )
             }
@@ -256,62 +298,62 @@ fun SettingsScreen() {
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Section 3: iOS General > About Tech Architecture
+        // Section 4: Architecture Specs
         item {
             CupertinoSection(
-                title = "系统底层架构 (Android 15+)",
-                footer = "适配 2026 年 Android 15+ 强制 16KB Page Size 内存对齐标准与原生沙箱隔离。"
+                title = "系统底层架构 (v1.2.0)",
+                footer = "纯 Kotlin 进程内包引擎替代旧版原生子进程架构，全端零原生 SO 崩溃风险且无需系统 Root/CA 证书。"
             ) {
                 CupertinoCell(
-                    title = "16KB Page Size ELF",
-                    subtitle = "Max Page Size 0x4000 对齐",
-                    icon = Icons.Default.Memory,
+                    title = "进程内 TUN 转发引擎",
+                    subtitle = "TunPacketEngine 纯 Kotlin IPv4/TCP/UDP/ICMP",
+                    icon = Icons.Default.Lan,
                     iconBackgroundColor = CupertinoColors.systemGreen,
                     trailingContent = {
                         Text(
-                            text = "原生对齐",
-                            fontSize = 13.sp,
+                            text = "In-Process",
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Medium,
                             color = CupertinoColors.systemGreen
                         )
                     }
                 )
                 CupertinoCell(
-                    title = "tun2socks 转发内核",
-                    subtitle = "基于 lwIP 2.1.2 零拷贝 TCP/IP 协议栈",
-                    icon = Icons.Default.Lan,
+                    title = "Fake-IP 智能分流路由",
+                    subtitle = "10.0.0.1 虚拟 DNS + 198.18.0.0/15 规则网段",
+                    icon = Icons.AutoMirrored.Filled.AltRoute,
                     iconBackgroundColor = CupertinoColors.systemTeal,
                     trailingContent = {
                         Text(
-                            text = "lwIP 2.1.2",
-                            fontSize = 13.sp,
+                            text = "RFC 2544",
+                            fontSize = 12.sp,
                             color = CupertinoColors.secondaryLabel
                         )
                     }
                 )
                 CupertinoCell(
-                    title = "免证书 SNI 转发",
-                    subtitle = "TLS ClientHello 握手嗅探，不侵入系统 CA",
+                    title = "DoH + TLS SNI 记录分片",
+                    subtitle = "抗污染 DoH 解析与 RFC 5246/8446 握手切片",
                     icon = Icons.Default.Security,
                     iconBackgroundColor = CupertinoColors.systemIndigo,
                     trailingContent = {
                         Text(
-                            text = "无侵入",
-                            fontSize = 13.sp,
+                            text = "严格 CA",
+                            fontSize = 12.sp,
                             color = CupertinoColors.secondaryLabel
                         )
                     }
                 )
                 CupertinoCell(
-                    title = "Steam Guard 认证",
-                    subtitle = "RFC-6238 HMAC-SHA1 动态加密算法",
+                    title = "Steam Guard 隔离存储",
+                    subtitle = "Android Keystore AES-256-GCM + 独立校时",
                     icon = Icons.Default.VpnKey,
                     iconBackgroundColor = CupertinoColors.systemOrange,
                     showDivider = false,
                     trailingContent = {
                         Text(
                             text = "HMAC-SHA1",
-                            fontSize = 13.sp,
+                            fontSize = 12.sp,
                             color = CupertinoColors.secondaryLabel
                         )
                     }
@@ -321,7 +363,7 @@ fun SettingsScreen() {
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Section 4: About & License
+        // Section 5: About & License
         item {
             CupertinoSection(
                 title = "关于 WATT TOOLKIT"
@@ -332,7 +374,7 @@ fun SettingsScreen() {
                     iconBackgroundColor = CupertinoColors.systemGray2,
                     trailingContent = {
                         Text(
-                            text = "v1.0.0 (2026.11)",
+                            text = "v1.2.0 (2026.11)",
                             fontSize = 13.sp,
                             color = CupertinoColors.secondaryLabel
                         )
@@ -354,7 +396,6 @@ fun SettingsScreen() {
             }
         }
 
-        // Safe spacing for bottom floating navigation bar
         item {
             Spacer(modifier = Modifier.height(120.dp))
         }

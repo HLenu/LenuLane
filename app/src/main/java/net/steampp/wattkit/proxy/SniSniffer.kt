@@ -2,9 +2,17 @@ package net.steampp.wattkit.proxy
 
 import java.nio.charset.StandardCharsets
 
-/** Extracts a DNS hostname from a complete, single-record TLS ClientHello. */
+/** Extracts a DNS hostname and its byte range from a complete, single-record TLS ClientHello. */
 object SniSniffer {
-    fun sniffSni(data: ByteArray, length: Int): String? {
+    fun sniffSni(data: ByteArray, length: Int): String? = parseSni(data, length)?.first
+
+    /**
+     * Returns the byte range [start, end) within [data] containing the SNI host_name ASCII bytes,
+     * or null if the packet is not a valid single-record TLS ClientHello with a valid SNI extension.
+     */
+    fun locateSniRange(data: ByteArray, length: Int): IntRange? = parseSni(data, length)?.second
+
+    private fun parseSni(data: ByteArray, length: Int): Pair<String, IntRange>? {
         if (length < 9 || length > data.size) return null
 
         // TLS record: content type, legacy version, and payload length.
@@ -58,13 +66,13 @@ object SniSniffer {
         return null
     }
 
-    private fun parseServerName(data: ByteArray, start: Int, end: Int): String? {
+    private fun parseServerName(data: ByteArray, start: Int, end: Int): Pair<String, IntRange>? {
         if (end - start < 2) return null
         val listLength = u16(data, start)
         if (listLength != end - start - 2) return null
 
         var cursor = start + 2
-        var hostname: String? = null
+        var match: Pair<String, IntRange>? = null
         while (cursor < end) {
             if (end - cursor < 3) return null
             val nameType = u8(data, cursor)
@@ -72,12 +80,13 @@ object SniSniffer {
             cursor += 3
             if (nameLength > end - cursor) return null
             if (nameType == 0) {
-                if (hostname != null) return null // Duplicate host_name entries.
-                hostname = readHostName(data, cursor, nameLength) ?: return null
+                if (match != null) return null // Duplicate host_name entries.
+                val hostname = readHostName(data, cursor, nameLength) ?: return null
+                match = hostname to (cursor until (cursor + nameLength))
             }
             cursor += nameLength
         }
-        return hostname
+        return match
     }
 
     private fun readHostName(data: ByteArray, start: Int, length: Int): String? {

@@ -1,10 +1,9 @@
 package net.steampp.wattkit.ui.screens
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -14,7 +13,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -23,15 +21,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import net.steampp.wattkit.proxy.RuleManager
+import net.steampp.wattkit.proxy.TrafficTelemetry
 import net.steampp.wattkit.ui.cupertino.CupertinoColors
 import net.steampp.wattkit.ui.cupertino.CupertinoPageHeader
 import net.steampp.wattkit.vpn.WattVpnService
@@ -45,9 +44,16 @@ fun HomeScreen(
     val liveDownloadSpeed by WattVpnService.rxSpeed.collectAsState()
     val liveUploadSpeed by WattVpnService.txSpeed.collectAsState()
     val vpnStartTime by WattVpnService.startTime.collectAsState()
-    val enabledRuleCount = RuleManager.getEnabledCount()
+    val networkStatus by WattVpnService.networkStatus.collectAsState()
 
-    // Persistent VPN Up-time counter (HH:mm:ss) derived from service start time
+    val routingMode by RuleManager.routingMode.collectAsState()
+    val dohProvider by RuleManager.dohProvider.collectAsState()
+    val totalHits by TrafficTelemetry.totalHits.collectAsState()
+    val activeConns by TrafficTelemetry.activeConnectionCount.collectAsState()
+    val recentConnections by TrafficTelemetry.recentConnections.collectAsState()
+    val enabledRuleCount = RuleManager.getEnabledCount()
+    val totalRuleCount = RuleManager.allRules.size
+
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
     LaunchedEffect(isVpnRunning, vpnStartTime) {
         if (isVpnRunning && vpnStartTime > 0L) {
@@ -77,16 +83,18 @@ fun HomeScreen(
     ) {
         item {
             Spacer(modifier = Modifier.height(8.dp))
-
-            // iOS Standard Large Title Header (Clean, no redundant cluttered buttons)
             CupertinoPageHeader(
                 title = "概览",
-                subtitle = if (isVpnRunning) "网络加速隧道活跃中 · 16KB tun2socks" else "WattKit 游戏网络工具箱"
+                subtitle = if (isVpnRunning) {
+                    "${routingMode.displayName} · ${dohProvider.displayName}"
+                } else {
+                    "WattKit 游戏网络工具箱 v1.2.0"
+                }
             )
             Spacer(modifier = Modifier.height(10.dp))
         }
 
-        // Apple Health Style Master Service Card in Light Mode
+        // Master Service Card
         item {
             Surface(
                 shape = RoundedCornerShape(20.dp),
@@ -100,39 +108,52 @@ fun HomeScreen(
                         .fillMaxWidth()
                         .padding(20.dp)
                 ) {
-                    // Status Header Badge
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(
-                                if (isVpnRunning) Color(0xFFE8F5E9) else Color(0xFFF2F2F7)
-                            )
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .size(7.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (isVpnRunning) CupertinoColors.systemGreen else CupertinoColors.systemGray
+                                    if (isVpnRunning) Color(0xFFE8F5E9) else Color(0xFFF2F2F7)
                                 )
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (isVpnRunning) "网络加速 · 已连接" else "网络加速 · 未启动",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (isVpnRunning) Color(0xFF1B5E20) else CupertinoColors.secondaryLabel
-                        )
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isVpnRunning) CupertinoColors.systemGreen else CupertinoColors.systemGray
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isVpnRunning) "加速隧道 · 运行中" else "加速隧道 · 未启动",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isVpnRunning) Color(0xFF1B5E20) else CupertinoColors.secondaryLabel
+                            )
+                        }
+
+                        if (isVpnRunning) {
+                            Text(
+                                text = networkStatus,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = CupertinoColors.systemTeal
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Large Status Title
                     Text(
-                        text = if (isVpnRunning) "连接已受保护" else "连接未开启",
-                        fontSize = 26.sp,
+                        text = if (isVpnRunning) "规则分流已接管" else "点击开启智能加速",
+                        fontSize = 25.sp,
                         fontWeight = FontWeight.Bold,
                         color = CupertinoColors.label
                     )
@@ -140,57 +161,30 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Text(
-                        text = if (isVpnRunning) "已启用 Steam 社区、GitHub 等 $enabledRuleCount 项加速规则" else "点击下方开关建立本地免证书透明反代隧道",
+                        text = if (isVpnRunning) {
+                            "活跃规则 $enabledRuleCount/$totalRuleCount · 累计命中 $totalHits 次 · 当前活跃连接 $activeConns"
+                        } else {
+                            "采用进程内 Fake-IP 智能分流与 TLS SNI 记录分片，普通访问零损耗直连"
+                        },
                         fontSize = 13.sp,
                         color = CupertinoColors.secondaryLabel,
                         lineHeight = 18.sp
                     )
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
-                    // Three-column Telemetry Data
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column {
-                            Text(text = "运行时间", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = formattedDuration,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = CupertinoColors.label
-                            )
-                        }
-                        Column {
-                            Text(text = "下载速度", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = if (isVpnRunning) liveDownloadSpeed else "0 B/s",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = CupertinoColors.label
-                            )
-                        }
-                        Column {
-                            Text(text = "上传速度", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = if (isVpnRunning) liveUploadSpeed else "0 B/s",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = CupertinoColors.label
-                            )
-                        }
+                        TelemetryStatColumn("运行时间", formattedDuration)
+                        TelemetryStatColumn("规则命中", "$totalHits 次")
+                        TelemetryStatColumn("下载", if (isVpnRunning) liveDownloadSpeed else "0 B/s")
+                        TelemetryStatColumn("上传", if (isVpnRunning) liveUploadSpeed else "0 B/s")
                     }
 
-                    Spacer(modifier = Modifier.height(22.dp))
+                    Spacer(modifier = Modifier.height(20.dp))
 
-                    // Master Operation Button
                     val interactionSource = remember { MutableInteractionSource() }
                     val isPressed by interactionSource.collectIsPressedAsState()
                     val buttonScale by animateFloatAsState(
@@ -226,7 +220,7 @@ fun HomeScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (isVpnRunning) "管理加速 (点击停止)" else "开启网络加速",
+                                text = if (isVpnRunning) "停止加速服务" else "开启智能加速",
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isVpnRunning) Color(0xFF065F46) else Color.White
@@ -236,10 +230,119 @@ fun HomeScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
         }
 
-        // Section Title: "快捷功能" (Shortcuts with 100% genuine utility)
+        // Live Hit Activity Feed
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "实时加速命中动态",
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = CupertinoColors.label
+                )
+                Text(
+                    text = "完整日志 >",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = CupertinoColors.systemBlue,
+                    modifier = Modifier.clickable { onNavigateToTab(3) }
+                )
+            }
+
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = CupertinoColors.secondarySystemGroupedBackground,
+                border = BorderStroke(0.5.dp, Color(0x1F000000)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (recentConnections.isEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = if (isVpnRunning) "等待加速域名流量进入..." else "启动加速或执行链路诊断后展示真实命中记录",
+                            fontSize = 13.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                } else {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        val preview = recentConnections.take(4)
+                        preview.forEachIndexed { index, entry ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val dotColor = when (entry.status) {
+                                    "ACTIVE" -> CupertinoColors.systemBlue
+                                    "OK" -> CupertinoColors.systemGreen
+                                    else -> CupertinoColors.systemRed
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(dotColor)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = entry.host,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontFamily = FontFamily.Monospace,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = CupertinoColors.label
+                                    )
+                                    Text(
+                                        text = "${entry.ruleName} · ${entry.strategyBadge} -> ${entry.targetIp}",
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = CupertinoColors.secondaryLabel
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "${entry.latencyMs}ms",
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Medium,
+                                    color = CupertinoColors.secondaryLabel
+                                )
+                            }
+                            if (index < preview.size - 1) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 32.dp)
+                                        .height(0.5.dp)
+                                        .background(CupertinoColors.separator)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(22.dp))
+        }
+
+        // Section Title: Shortcuts
         item {
             Text(
                 text = "快捷功能",
@@ -250,7 +353,6 @@ fun HomeScreen(
             )
         }
 
-        // Shortcuts Grid: 4 Genuine, working capabilities
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -258,20 +360,20 @@ fun HomeScreen(
             ) {
                 ShortcutCard(
                     title = "Steam 令牌",
-                    subtitle = "动态口令与校时",
+                    subtitle = "独立运行 · 硬件加密",
                     icon = Icons.Default.Security,
                     iconBgColor = CupertinoColors.systemTeal,
                     modifier = Modifier.weight(1f),
-                    onClick = { onNavigateToTab(2) } // To Tab 2 (Authenticator)
+                    onClick = { onNavigateToTab(2) }
                 )
 
                 ShortcutCard(
-                    title = "网络加速",
-                    subtitle = "22 项生态规则",
+                    title = "节点与规则",
+                    subtitle = "$enabledRuleCount/$totalRuleCount 条 · ${routingMode.displayName.substringBefore(" ")}",
                     icon = Icons.Default.Bolt,
                     iconBgColor = CupertinoColors.systemGreen,
                     modifier = Modifier.weight(1f),
-                    onClick = { onNavigateToTab(1) } // To Tab 1 (Acceleration)
+                    onClick = { onNavigateToTab(1) }
                 )
             }
 
@@ -282,26 +384,41 @@ fun HomeScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 ShortcutCard(
-                    title = "连通性雷达",
-                    subtitle = "四节点实时测速",
+                    title = "链路诊断雷达",
+                    subtitle = "DoH + 严格 TLS 验证",
                     icon = Icons.Default.WifiTethering,
                     iconBgColor = CupertinoColors.systemIndigo,
                     modifier = Modifier.weight(1f),
-                    onClick = { onNavigateToTab(3) } // To Tab 3 (Tools & Settings)
+                    onClick = { onNavigateToTab(3) }
                 )
 
                 ShortcutCard(
-                    title = "账号管理",
-                    subtitle = "多账号与 maFile",
+                    title = "账号与密钥",
+                    subtitle = "maFile 导入与校时",
                     icon = Icons.Default.People,
                     iconBgColor = CupertinoColors.systemOrange,
                     modifier = Modifier.weight(1f),
-                    onClick = { onNavigateToTab(2) } // To Tab 2 (Authenticator)
+                    onClick = { onNavigateToTab(2) }
                 )
             }
 
-            Spacer(modifier = Modifier.height(120.dp)) // Space for floating bottom dock
+            Spacer(modifier = Modifier.height(120.dp))
         }
+    }
+}
+
+@Composable
+private fun TelemetryStatColumn(label: String, value: String) {
+    Column {
+        Text(text = label, fontSize = 11.sp, color = CupertinoColors.secondaryLabel)
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(
+            text = value,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            color = CupertinoColors.label
+        )
     }
 }
 
@@ -368,6 +485,8 @@ fun ShortcutCard(
                 Text(
                     text = subtitle,
                     fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     color = CupertinoColors.secondaryLabel
                 )
             }

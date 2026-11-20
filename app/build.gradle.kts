@@ -5,40 +5,42 @@ plugins {
 
 android {
     namespace = "net.steampp.wattkit"
-    // compileSdk 35 aligns with the 16KB Page Size / Android 15+ ELF requirement
-    // documented in README (AGP 8.7+ is required for compileSdk 35).
-    compileSdk = 35
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "net.steampp.wattkit"
         minSdk = 24
-        targetSdk = 35
-        versionCode = 2
-        versionName = "1.0.1"
+        targetSdk = 34
+        versionCode = 3
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
-        ndk {
-            // Keep in sync with the bundled 16KB-aligned .so files under app/src/main/jniLibs.
-            abiFilters.addAll(listOf("arm64-v8a", "x86_64", "armeabi-v7a"))
-        }
     }
 
     signingConfigs {
-        // Release signing is opt-in via environment variables so that the project
-        // builds out-of-the-box for everyone (no private keystore is committed):
-        //   WATTKIT_STORE_FILE / WATTKIT_STORE_PASSWORD
-        //   WATTKIT_KEY_ALIAS  / WATTKIT_KEY_PASSWORD
-        // When unset, release builds fall back to the debug key.
-        val storeFilePath = System.getenv("WATTKIT_STORE_FILE")
-        if (storeFilePath != null && file(storeFilePath).exists()) {
+        // Release signing checks WATTKIT_* env vars first, then the local official
+        // keystore so locally built APKs remain upgrade-compatible with v1.0.0.
+        // In CI or external environments without either, release falls back to debug.
+        val envStore = System.getenv("WATTKIT_STORE_FILE")
+        val localOfficialStore = "C:/Users/Administrator/Documents/Watt-Toolkit-Keystore/repair-test.keystore"
+        if (envStore != null && file(envStore).exists()) {
             create("release") {
-                storeFile = file(storeFilePath)
+                storeFile = file(envStore)
                 storePassword = System.getenv("WATTKIT_STORE_PASSWORD") ?: ""
                 keyAlias = System.getenv("WATTKIT_KEY_ALIAS") ?: ""
                 keyPassword = System.getenv("WATTKIT_KEY_PASSWORD") ?: ""
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        } else if (file(localOfficialStore).exists()) {
+            create("release") {
+                storeFile = file(localOfficialStore)
+                storePassword = "android"
+                keyAlias = "androidrepair"
+                keyPassword = "android"
                 enableV1Signing = true
                 enableV2Signing = true
             }
