@@ -52,33 +52,44 @@ data class ResolvedDnsResult(
 class ProtectedSocketFactory(
     private val protectProvider: () -> ((Socket) -> Boolean)?
 ) : SocketFactory() {
-    override fun createSocket(): Socket = Socket().also { protect(it) }
+    override fun createSocket(): Socket = Socket().also {
+        bindForFd(it)
+        protect(it)
+    }
 
     override fun createSocket(host: String, port: Int): Socket =
         Socket().also {
+            bindForFd(it)
             protect(it)
             it.connect(InetSocketAddress(host, port))
         }
 
     override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int): Socket =
         Socket().also {
-            protect(it)
             it.bind(InetSocketAddress(localHost, localPort))
+            protect(it)
             it.connect(InetSocketAddress(host, port))
         }
 
     override fun createSocket(host: InetAddress, port: Int): Socket =
         Socket().also {
+            bindForFd(it)
             protect(it)
             it.connect(InetSocketAddress(host, port))
         }
 
     override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int): Socket =
         Socket().also {
-            protect(it)
             it.bind(InetSocketAddress(localAddress, localPort))
+            protect(it)
             it.connect(InetSocketAddress(address, port))
         }
+
+    private fun bindForFd(socket: Socket) {
+        try {
+            socket.bind(null)
+        } catch (_: Exception) {}
+    }
 
     private fun protect(socket: Socket) {
         val cb = protectProvider() ?: return
@@ -97,13 +108,14 @@ object DoHResolver {
     private val DNS_MESSAGE_MEDIA_TYPE = "application/dns-message".toMediaType()
 
     private data class CachedEntry(
-        val ip: String,
+        val ips: List<String>,
         val source: String,
         val ttlSeconds: Int,
         val expiresAtMs: Long
     )
 
     private val cache = ConcurrentHashMap<String, CachedEntry>()
+    private val inFlightLocks = ConcurrentHashMap<String, Any>()
     private val prefetchScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Volatile
@@ -123,7 +135,7 @@ object DoHResolver {
             .socketFactory(ProtectedSocketFactory { tcpProtectCallback })
             .connectTimeout(2500, TimeUnit.MILLISECONDS)
             .readTimeout(2500, TimeUnit.MILLISECONDS)
-            .retryOnConnectionFailure(false)
+            .retryOnConnectionFailure(true)
             .build()
     }
 
@@ -135,7 +147,7 @@ object DoHResolver {
         // Steam Akamai/Fastly Edge
         "steamcommunity.com" to listOf("104.116.16.214", "184.25.121.15"),
         "www.steamcommunity.com" to listOf("104.116.16.214", "184.25.121.15"),
-        "store.steampowered.com" to listOf("23.15.142.182", "23.35.148.148"),
+        "store.steampowered.com" to listOf("23.15.142.182", "23.41.38.92"),
         "api.steampowered.com" to listOf("23.35.148.148", "23.35.148.140"),
         "login.steampowered.com" to listOf("23.35.148.148", "23.15.142.182"),
         "checkout.steampowered.com" to listOf("23.15.142.182", "23.35.148.148"),
@@ -146,9 +158,9 @@ object DoHResolver {
         "clan.cloudflare.steamstatic.com" to listOf("146.75.47.52"),
 
         // Pixiv Cloudflare / Fastly Edge
-        "i.pximg.net" to listOf("210.140.139.130", "210.140.139.133"),
-        "s.pximg.net" to listOf("210.140.139.130"),
-        "pixiv.net" to listOf("210.140.139.161", "210.140.139.155"),
+        "i.pximg.net" to listOf("210.140.139.130", "210.140.139.133", "104.18.42.239", "172.64.145.17"),
+        "s.pximg.net" to listOf("210.140.139.130", "104.18.42.239"),
+        "pixiv.net" to listOf("210.140.139.161", "210.140.139.155", "104.18.42.239"),
         "www.pixiv.net" to listOf("104.18.42.239", "172.64.145.17"),
         "accounts.pixiv.net" to listOf("104.18.42.239", "172.64.145.17"),
         "touch.pixiv.net" to listOf("104.18.42.239"),
@@ -162,10 +174,10 @@ object DoHResolver {
         "codeload.github.com" to listOf("20.205.243.165"),
 
         // Discord Cloudflare Edge
-        "discord.com" to listOf("162.159.136.232", "162.159.135.232"),
-        "discord.gg" to listOf("162.159.136.232"),
-        "gateway.discord.gg" to listOf("162.159.135.234"),
-        "cdn.discordapp.com" to listOf("162.159.133.233")
+        "discord.com" to listOf("162.159.136.232", "162.159.135.232", "162.159.128.233", "162.159.137.232", "162.159.138.232"),
+        "discord.gg" to listOf("162.159.136.232", "162.159.128.233"),
+        "gateway.discord.gg" to listOf("162.159.135.234", "162.159.137.232"),
+        "cdn.discordapp.com" to listOf("162.159.133.233", "162.159.128.233")
     )
 
     fun setVpnProtectCallbacks(
@@ -197,67 +209,108 @@ object DoHResolver {
 
     fun resolve(hostname: String): String? = resolveWithSource(hostname)?.ip
 
-    fun resolveWithSource(hostname: String): ResolvedDnsResult? {
+    fun resolveWithSource(hostname: String): ResolvedDnsResult? =
+        resolveCandidates(hostname).firstOrNull()
+
+    fun resolveCandidates(hostname: String): List<ResolvedDnsResult> {
         val clean = hostname.lowercase().trim().trimEnd('.')
-        if (clean.isEmpty()) return null
+        if (clean.isEmpty()) return emptyList()
 
         // Literal IPv4 address -> validate and return immediately
         DnsPacketCodec.ipStringToInt(clean)?.let { ipInt ->
             if (!isPoisonedOrBogon(ipInt)) {
-                return ResolvedDnsResult(clean, "IP 直连", 300)
+                return listOf(ResolvedDnsResult(clean, "IP 直连", 300))
             }
-            return null
+            return emptyList()
         }
 
         val now = System.currentTimeMillis()
-        val existing = cache[clean]
-        if (existing != null && now < existing.expiresAtMs) {
-            return ResolvedDnsResult(existing.ip, existing.source, existing.ttlSeconds)
+        cache[clean]?.takeIf { now < it.expiresAtMs && it.ips.isNotEmpty() }?.let { cached ->
+            return cached.ips.map { ResolvedDnsResult(it, cached.source, cached.ttlSeconds) }
         }
 
-        // 1. Primary: Active DoH Provider
-        val provider = activeProvider
-        val primary = queryProvider(provider, clean)
-        if (primary != null) {
-            cacheResult(clean, primary)
-            return primary
-        }
-
-        // 2. Cross-provider DoH fallback (skip Cloudflare if it recently timed out on fallback)
-        val alternates = listOf(DoHProvider.DNSPOD, DoHProvider.ALIDNS, DoHProvider.CLOUDFLARE)
-            .filter { it != provider }
-        for (alt in alternates) {
-            if (alt == DoHProvider.CLOUDFLARE && System.currentTimeMillis() < cloudflareFallbackCooldownUntilMs) {
-                continue
+        // In-flight deduplication per domain: burst connections share a single DoH lookup
+        val domainLock = inFlightLocks.computeIfAbsent(clean) { Any() }
+        synchronized(domainLock) {
+            val freshNow = System.currentTimeMillis()
+            cache[clean]?.takeIf { freshNow < it.expiresAtMs && it.ips.isNotEmpty() }?.let { cached ->
+                return cached.ips.map { ResolvedDnsResult(it, cached.source, cached.ttlSeconds) }
             }
-            val altRes = queryProvider(alt, clean)
-            if (altRes != null) {
-                cacheResult(clean, altRes)
-                return altRes
-            }
-            if (alt == DoHProvider.CLOUDFLARE) {
-                cloudflareFallbackCooldownUntilMs = System.currentTimeMillis() + 60_000L
-            }
-        }
 
-        // 3. Protected UDP/53 query to clean domestic resolvers
-        for (udpDns in listOf("223.5.5.5", "119.29.29.29")) {
-            val udpRes = queryUdpDns(clean, udpDns)
-            if (udpRes != null) {
-                cacheResult(clean, udpRes)
-                return udpRes
+            val edgePool = findFallbackIps(clean).orEmpty()
+            var pickedSource = ""
+            var pickedTtl = 120
+            val discoveredIps = mutableListOf<String>()
+
+            // 1. Primary: Active DoH Provider
+            val provider = activeProvider
+            queryProvider(provider, clean)?.let { (ips, src, ttl) ->
+                discoveredIps.addAll(ips)
+                pickedSource = src
+                pickedTtl = ttl
             }
-        }
 
-        // 4. Verified CDN Anycast fallback pool
-        val edgeList = findFallbackIps(clean)
-        if (!edgeList.isNullOrEmpty()) {
-            val res = ResolvedDnsResult(edgeList.first(), "CDN Edge 池", 120)
-            cacheResult(clean, res)
-            return res
-        }
+            // 2. Cross-provider DoH fallback (skip Cloudflare if recently timed out)
+            if (discoveredIps.isEmpty()) {
+                val alternates = listOf(DoHProvider.DNSPOD, DoHProvider.ALIDNS, DoHProvider.CLOUDFLARE)
+                    .filter { it != provider }
+                for (alt in alternates) {
+                    if (alt == DoHProvider.CLOUDFLARE && System.currentTimeMillis() < cloudflareFallbackCooldownUntilMs) {
+                        continue
+                    }
+                    val altRes = queryProvider(alt, clean)
+                    if (altRes != null) {
+                        discoveredIps.addAll(altRes.first)
+                        pickedSource = altRes.second
+                        pickedTtl = altRes.third
+                        break
+                    }
+                    if (alt == DoHProvider.CLOUDFLARE) {
+                        cloudflareFallbackCooldownUntilMs = System.currentTimeMillis() + 60_000L
+                    }
+                }
+            }
 
-        return null
+            // 3. Protected UDP/53 query to clean domestic resolvers
+            if (discoveredIps.isEmpty()) {
+                for (udpDns in listOf("223.5.5.5", "119.29.29.29")) {
+                    val udpRes = queryUdpDns(clean, udpDns)
+                    if (udpRes != null) {
+                        discoveredIps.addAll(udpRes.first)
+                        pickedSource = udpRes.second
+                        pickedTtl = udpRes.third
+                        break
+                    }
+                }
+            }
+
+            // Only fall back to static CDN Edge pool when live DoH + protected UDP both returned nothing.
+            val mergedList = if (discoveredIps.isNotEmpty()) {
+                discoveredIps.distinct()
+            } else {
+                pickedSource = "CDN Edge 池"
+                edgePool.distinct()
+            }
+            if (mergedList.isEmpty()) return emptyList()
+            cacheResult(clean, mergedList, pickedSource, pickedTtl)
+            return mergedList.map { ResolvedDnsResult(it, pickedSource, pickedTtl) }
+        }
+    }
+
+    /**
+     * Demotes a candidate IP that failed TCP connect or suffered an immediate TLS handshake reset,
+     * promoting the next healthy candidate IP for subsequent connections.
+     */
+    fun markIpFailed(hostname: String, failedIp: String) {
+        val clean = hostname.lowercase().trim().trimEnd('.')
+        if (clean.isEmpty() || failedIp.isBlank()) return
+        val domainLock = inFlightLocks.computeIfAbsent(clean) { Any() }
+        synchronized(domainLock) {
+            val cached = cache[clean] ?: return
+            if (cached.ips.size <= 1) return
+            val reordered = cached.ips.filter { it != failedIp } + failedIp
+            cache[clean] = cached.copy(ips = reordered)
+        }
     }
 
     private fun findFallbackIps(host: String): List<String>? {
@@ -270,17 +323,17 @@ object DoHResolver {
         return null
     }
 
-    private fun cacheResult(host: String, res: ResolvedDnsResult) {
-        val ttlMs = res.ttlSeconds.coerceIn(30, 600) * 1000L
+    private fun cacheResult(host: String, ips: List<String>, source: String, ttlSeconds: Int) {
+        val ttlMs = ttlSeconds.coerceIn(30, 600) * 1000L
         cache[host] = CachedEntry(
-            ip = res.ip,
-            source = res.source,
-            ttlSeconds = res.ttlSeconds,
+            ips = ips,
+            source = source,
+            ttlSeconds = ttlSeconds,
             expiresAtMs = System.currentTimeMillis() + ttlMs
         )
     }
 
-    private fun queryProvider(provider: DoHProvider, domain: String): ResolvedDnsResult? {
+    private fun queryProvider(provider: DoHProvider, domain: String): Triple<List<String>, String, Int>? {
         return try {
             if (provider.useWireFormat) {
                 val wireQuery = DnsPacketCodec.buildQuery(domain, DnsPacketCodec.TYPE_A, 0x2026)
@@ -288,18 +341,21 @@ object DoHResolver {
                     .url(provider.endpointUrl)
                     .post(wireQuery.toRequestBody(DNS_MESSAGE_MEDIA_TYPE))
                     .header("Accept", "application/dns-message")
-                    .header("User-Agent", "WattKit/1.2.0")
+                    .header("User-Agent", "WattKit/1.2.1")
                     .build()
                 dohHttpClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return null
                     val bytes = resp.body?.bytes() ?: return null
                     val records = DnsPacketCodec.extractARecords(bytes, bytes.size)
+                    val validIps = mutableListOf<String>()
+                    var bestTtl = 60
                     for ((ipInt, ttl) in records) {
                         if (!isPoisonedOrBogon(ipInt)) {
-                            return ResolvedDnsResult(DnsPacketCodec.ipIntToString(ipInt), provider.displayName, ttl)
+                            validIps += DnsPacketCodec.ipIntToString(ipInt)
+                            if (validIps.size == 1) bestTtl = ttl
                         }
                     }
-                    null
+                    if (validIps.isEmpty()) null else Triple(validIps, provider.displayName, bestTtl)
                 }
             } else {
                 val encoded = URLEncoder.encode(domain, "UTF-8")
@@ -308,7 +364,7 @@ object DoHResolver {
                     .url(url)
                     .get()
                     .header("Accept", "application/dns-json")
-                    .header("User-Agent", "WattKit/1.2.0")
+                    .header("User-Agent", "WattKit/1.2.1")
                     .build()
                 dohHttpClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return null
@@ -316,16 +372,19 @@ object DoHResolver {
                     val json = JSONObject(body)
                     if (json.optInt("Status", -1) != 0) return null
                     val answers = json.optJSONArray("Answer") ?: return null
+                    val validIps = mutableListOf<String>()
+                    var bestTtl = 60
                     for (i in 0 until answers.length()) {
                         val ans = answers.optJSONObject(i) ?: continue
                         if (ans.optInt("type") != 1) continue
                         val data = ans.optString("data", "").trim()
                         val ttl = ans.optInt("TTL", 60).coerceIn(15, 3600)
                         if (!isPoisonedOrBogon(data)) {
-                            return ResolvedDnsResult(data, provider.displayName, ttl)
+                            validIps += data
+                            if (validIps.size == 1) bestTtl = ttl
                         }
                     }
-                    null
+                    if (validIps.isEmpty()) null else Triple(validIps, provider.displayName, bestTtl)
                 }
             }
         } catch (e: IOException) {
@@ -337,12 +396,12 @@ object DoHResolver {
         }
     }
 
-    private fun queryUdpDns(domain: String, dnsServerIp: String): ResolvedDnsResult? {
+    private fun queryUdpDns(domain: String, dnsServerIp: String): Triple<List<String>, String, Int>? {
         var socket: DatagramSocket? = null
         return try {
             socket = DatagramSocket()
             udpProtectCallback?.invoke(socket)
-            socket.soTimeout = 1500
+            socket.soTimeout = 1000
             val wireQuery = DnsPacketCodec.buildQuery(domain, DnsPacketCodec.TYPE_A, (System.nanoTime() and 0xFFFF).toInt())
             val serverAddr = InetAddress.getByName(dnsServerIp)
             socket.send(DatagramPacket(wireQuery, wireQuery.size, serverAddr, 53))
@@ -350,12 +409,15 @@ object DoHResolver {
             val respPkt = DatagramPacket(buf, buf.size)
             socket.receive(respPkt)
             val records = DnsPacketCodec.extractARecords(buf, respPkt.length)
+            val validIps = mutableListOf<String>()
+            var bestTtl = 60
             for ((ipInt, ttl) in records) {
                 if (!isPoisonedOrBogon(ipInt)) {
-                    return ResolvedDnsResult(DnsPacketCodec.ipIntToString(ipInt), "UDP DNS ($dnsServerIp)", ttl)
+                    validIps += DnsPacketCodec.ipIntToString(ipInt)
+                    if (validIps.size == 1) bestTtl = ttl
                 }
             }
-            null
+            if (validIps.isEmpty()) null else Triple(validIps, "UDP DNS ($dnsServerIp)", bestTtl)
         } catch (_: Exception) {
             null
         } finally {
@@ -392,10 +454,12 @@ object DoHResolver {
         if (b0 == 199 && b1 == 96 && b2 == 57) return true
         if (b0 == 31 && b1 == 13 && b2 in 64..127) return true // Spoofed Meta IP
         if (b0 == 157 && b1 == 240) return true // Spoofed Meta IP
+        if (b0 == 69 && b1 == 63 && b2 in 176..191) return true // Spoofed Meta AS32934 IP
         if (b0 == 69 && b1 == 171 && b2 in 224..255) return true
         if (b0 == 66 && b1 == 220 && b2 in 144..159) return true
         if (b0 == 128 && b1 == 121 && b2 == 146) return true
         if (b0 == 108 && b1 == 160 && b2 == 165) return true // Spoofed Dropbox IP
+        if (b0 == 103 && b1 == 252 && b2 == 115) return true // Spoofed Meta/Pixiv poison IP
         if (b0 == 103 && b1 == 97 && b2 == 176 && b3 == 73) return true // Hijacked domestic 103.97.176.73 for Pixiv
         if ((b0 == 46 && b1 == 82 && b2 == 174 && b3 == 68) ||
             (b0 == 59 && b1 == 24 && b2 == 3) ||

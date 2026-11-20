@@ -52,7 +52,8 @@ class DnsAndFakeIpTest {
         val rejected = listOf(
             "0.0.0.0", "127.0.0.1", "10.0.2.15", "192.168.1.1", "172.16.0.1",
             "198.18.0.10", "198.19.1.5",
-            "104.244.43.35", "157.240.17.41", "46.82.174.68", "108.160.165.141", "103.97.176.73"
+            "104.244.43.35", "157.240.17.41", "69.63.178.13", "103.252.115.53",
+            "46.82.174.68", "108.160.165.141", "103.97.176.73"
         )
         for (ip in rejected) {
             check(DoHResolver.isPoisonedOrBogon(ip)) { "Should reject $ip" }
@@ -65,5 +66,15 @@ class DnsAndFakeIpTest {
         for (ip in allowed) {
             check(!DoHResolver.isPoisonedOrBogon(ip)) { "Should allow clean CDN IP $ip" }
         }
+    }
+
+    @Test fun dohLiteralIpAndFallbackPoolOrderWorkCleanly() {
+        val lit = DoHResolver.resolveCandidates("1.1.1.1")
+        check(lit.size == 1 && lit[0].ip == "1.1.1.1")
+        check(DoHResolver.resolveCandidates("198.18.0.10").isEmpty())
+        val fallbackList = DoHResolver.fallbackIps["steamcommunity.com"]
+        check(fallbackList != null && fallbackList.size >= 2)
+        val discordList = DoHResolver.fallbackIps["discord.com"]
+        check(discordList != null && discordList.size >= 3)
     }
 }

@@ -71,4 +71,28 @@ class PacketChecksumAndTunTest {
         check(PacketChecksum.internetChecksum(icmp, 0, 20) == 0)
         check(PacketChecksum.internetChecksum(icmp, 20, icmp.size - 20) == 0)
     }
+
+    @Test fun fullMtuTcpSegmentChecksumAndWraparoundVerify() {
+        val srcIp = DnsPacketCodec.ipStringToInt("198.18.0.12")!!
+        val dstIp = DnsPacketCodec.ipStringToInt("10.0.0.2")!!
+        val payload = ByteArray(1360) { i -> (i and 0xFF).toByte() }
+        val pkt = PacketChecksum.buildIpv4TcpPacket(
+            srcIp = srcIp,
+            srcPort = 443,
+            dstIp = dstIp,
+            dstPort = 52000,
+            seqNum = 0xFFFFFCE0L,
+            ackNum = 0x12345678L,
+            tcpFlags = PacketChecksum.TCP_PSH or PacketChecksum.TCP_ACK,
+            windowSize = 65535,
+            payload = payload,
+            payloadOffset = 0,
+            payloadLen = payload.size
+        )
+        check(pkt.size == 20 + 20 + 1360)
+        check(PacketChecksum.internetChecksum(pkt, 0, 20) == 0)
+        val tcpLen = pkt.size - 20
+        val pseudo = PacketChecksum.pseudoHeaderSum(srcIp, dstIp, PacketChecksum.PROTO_TCP, tcpLen)
+        check(PacketChecksum.internetChecksum(pkt, 20, tcpLen, pseudo) == 0)
+    }
 }

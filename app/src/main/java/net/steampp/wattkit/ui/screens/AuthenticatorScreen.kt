@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -179,6 +180,7 @@ fun AuthenticatorScreen() {
                                     Text(
                                         text = clockLabel,
                                         fontSize = 11.sp,
+                                        maxLines = 1,
                                         color = CupertinoColors.secondaryLabel
                                     )
                                 }
@@ -310,7 +312,12 @@ fun AuthenticatorScreen() {
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Box(
                                     modifier = Modifier
                                         .size(28.dp)
@@ -330,6 +337,8 @@ fun AuthenticatorScreen() {
                                     text = activeAccount.accountName,
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     color = CupertinoColors.label
                                 )
                             }
@@ -353,6 +362,7 @@ fun AuthenticatorScreen() {
                                     Text(
                                         text = clockLabel,
                                         fontSize = 11.sp,
+                                        maxLines = 1,
                                         color = CupertinoColors.secondaryLabel
                                     )
                                 }

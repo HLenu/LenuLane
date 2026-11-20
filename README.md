@@ -1,16 +1,16 @@
 # WattKit (Android)
 
 > **Modern iOS Cupertino Style Steam Toolkit & Pure-Kotlin Network Accelerator for Android**
-> 基于纯 Kotlin + Jetpack Compose 构建，在 **v1.2.0** 彻底重构网络引擎，实现进程内智能 Fake-IP 分流、DoH 抗污染解析与 RFC TLS SNI 记录分片。
+> 基于纯 Kotlin + Jetpack Compose 构建，在 **v1.2.0** 彻底重构网络引擎后，**v1.2.1** 基于真实 USB 真机（OPPO PGEM10 / Android 17）全面剖析并修复 `/dev/tun` 非阻塞轮询空转、Socket 保护与高并发流控，实现空载 `0.0% CPU` 与完整实机验证。
 
 <p align="center">
-  <b>最新版本 v1.2.0</b> · <a href="https://github.com/HLenu/WattKit/releases/latest">下载 / Release Notes</a> · <a href="LICENSE">GPL-3.0</a>
+  <b>最新版本 v1.2.1</b> · <a href="https://github.com/HLenu/WattKit/releases/latest">下载 / Release Notes</a> · <a href="LICENSE">GPL-3.0</a>
 </p>
 
 | 项目 | 说明 |
 | :--- | :--- |
-| 当前版本 | **v1.2.0**（versionCode 3） |
-| 网络内核 | 纯 Kotlin 进程内 `TunPacketEngine`（已移除旧版 `libtun2socks.so` 子进程） |
+| 当前版本 | **v1.2.1**（versionCode 4） |
+| 网络内核 | 纯 Kotlin 进程内 `TunPacketEngine`（`Os.poll` + `Os.pipe()` 零空转唤醒） |
 | 支持架构 | 全架构纯 Kotlin + Jetpack Compose（兼容 Android 15+ 16KB Page Size） |
 | 系统要求 | Android 7.0+（API 24），compileSdk / targetSdk 34 |
 | 开源许可 | GNU GPL v3.0 |
@@ -21,7 +21,8 @@
 
 | 版本 | 类型 | 说明 |
 | :--- | :--- | :--- |
-| [**v1.2.0**](https://github.com/HLenu/WattKit/releases/tag/v1.2.0) | 预编译 APK | **最新重构版**，彻底解决 VPN 断网问题，支持直接覆盖升级 v1.0.0（`WattKit-v1.2.0-release.apk`） |
+| [**v1.2.1**](https://github.com/HLenu/WattKit/releases/tag/v1.2.1) | 预编译 APK | **最新真机调优版**，修复 `/dev/tun` `O_NONBLOCK` 空载 100% CPU 与 GC 抖动、完善多连接并发/流控与竖屏排版（`WattKit-v1.2.1-release.apk`） |
+| [**v1.2.0**](https://github.com/HLenu/WattKit/releases/tag/v1.2.0) | 历史版本 | 网络内核重构版，引入纯 Kotlin `TunPacketEngine` + Fake-IP 分流 + DoH |
 | [**v1.0.1**](https://github.com/HLenu/WattKit/releases/tag/v1.0.1) | 历史版本 | SNI 解析与密钥存储加固版本（debug 签名，仍采用旧版 tun2socks 架构） |
 | [**v1.0.0**](https://github.com/HLenu/WattKit/releases/tag/v1.0.0) | 历史版本 | 首个正式版本 |
 
@@ -66,11 +67,11 @@
 
 ## 🧪 单元测试覆盖
 
-项目包含 21 个纯 JVM JUnit 4 单元测试：
+项目包含 23 个纯 JVM JUnit 4 单元测试：
 - `SniSnifferTest`（10 个用例）：TLS ClientHello SNI 提取、恶意越界/畸形记录防御与字节区间定位。
 - `TlsFragmenterTest`（3 个用例）：验证分片后每条 TLS Record 长度精确、单包不泄露完整 SNI 且重组字节 100% 还原。
-- `DnsAndFakeIpTest`（4 个用例）：验证 `FakeIpPool` 分配与反查、`DnsPacketCodec` 报文编解码及污染 IP 过滤。
-- `PacketChecksumAndTunTest`（4 个用例）：验证 RFC 1071 IPv4/UDP/TCP/ICMP 校验和及 ICMP Echo / Port Unreachable 报文构造。
+- `DnsAndFakeIpTest`（5 个用例）：验证 `FakeIpPool` 分配与反查、`DnsPacketCodec` 报文编解码、DoH 候选池与扩展污染 IP 过滤。
+- `PacketChecksumAndTunTest`（5 个用例）：验证 RFC 1071 IPv4/UDP/TCP/ICMP 校验和（含全 MTU 分段回环序号）及 ICMP Echo / Port Unreachable 报文构造。
 
 ---
 
@@ -102,6 +103,12 @@ Release 编译产物位于 `app/build/outputs/apk/release/app-release.apk`。
 ---
 
 ## 📝 更新日志
+
+### v1.2.1
+- **修复真机 `/dev/tun` 非阻塞 100% CPU 空转与 GC 抖动**：Android 系统 `/dev/tun` 以 `O_NONBLOCK` 打开，旧版 `FileInputStream.read()` 空载持续触发 `EAGAIN -> return 0` 与每次 `ErrnoException` 分配导致单核满载及每 500ms 一次 11MB GC；现改为 `android.system.Os.poll()` + `Os.pipe()` 唤醒机制，真机实测空载 CPU 从 `96.5%~100%` 降至 **`0.0%`**，停止耗时仅 **1 ms**，内存 PSS 降低 **~27 MB**，掉帧率（`gfxinfo` Janky）从 `23.5%` 降至 **`9.4%`**。
+- **Socket FD 先绑定再 `protect()` & DoH 连接池重试**：修复 Android 17 上 `new Socket()` 未分配 FD 时 `VpnService.protect()` 返回 `false` 的隐患，确保 `SMART_SPLIT` 与 `GLOBAL_TUN` 全链路均零环回；为 `DoHResolver` 增加同域名并发请求锁去重、连接复用失败重试与扩展污染 IP 过滤（`69.63.176.0/20`、`103.252.115.0/24`）。
+- **TUN 用户态 TCP 流控与并发上限优化**：用 `Dispatchers.IO.limitedParallelism(64/32)` 替代无界 `CachedThreadPool`；`TunTcpSession` 新增未确认分段快速重传与乱序上行重排队列，并通过 `PowerManager.isInteractive` 在息屏状态下自动降频统计轮询至 `5s`。
+- **360dp 竖屏与细节优化**：修复 `CupertinoSearchField` 占位符单行截断、`VPN 路由模式` 标签横向滚动与 `AuthenticatorScreen` 时钟标签换行，并通过真机 8 路并发、全局/智能分流切换、连续启停与息屏驻留实测。
 
 ### v1.2.0
 - **网络引擎重构**：移除 `libtun2socks.so` 子进程及 JNI SO 依赖，改为纯 Kotlin 进程内 `TunPacketEngine` + `SmartDnsEngine` + `FakeIpPool` + `PacketChecksum`

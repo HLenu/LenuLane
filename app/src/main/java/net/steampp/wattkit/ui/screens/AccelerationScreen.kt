@@ -143,7 +143,10 @@ fun AccelerationScreen(
                             color = CupertinoColors.label
                         )
                         Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             RoutingMode.entries.forEach { mode ->
                                 CupertinoFilterPill(
                                     text = mode.displayName,

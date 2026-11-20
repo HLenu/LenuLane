@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -257,6 +258,8 @@ fun CupertinoSearchField(
                         Text(
                             text = placeholder,
                             fontSize = 15.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             color = CupertinoColors.secondaryLabel
                         )
                     }

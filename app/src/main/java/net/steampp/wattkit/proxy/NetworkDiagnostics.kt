@@ -87,8 +87,9 @@ object NetworkDiagnostics {
         timeoutMs: Long = 6000L
     ): HttpCallOutcome {
         val start = System.currentTimeMillis()
-        val dnsRes = DoHResolver.resolveWithSource(host)
-            ?: return HttpCallOutcome(
+        val candidates = DoHResolver.resolveCandidates(host)
+        if (candidates.isEmpty()) {
+            return HttpCallOutcome(
                 resolvedIp = "-",
                 dnsSource = "解析失败",
                 httpCode = 0,
@@ -98,7 +99,45 @@ object NetworkDiagnostics {
                 latencyMs = System.currentTimeMillis() - start,
                 error = "DoH 无法解析域名"
             )
+        }
 
+        val attempts = candidates.take(2)
+        var lastOutcome: HttpCallOutcome? = null
+        for (idx in attempts.indices) {
+            val cand = attempts[idx]
+            val outcome = executeSingleAttempt(
+                url = url,
+                host = host,
+                resolvedIp = cand.ip,
+                dnsSource = cand.source,
+                port = port,
+                postBody = postBody,
+                readBody = readBody,
+                timeoutMs = timeoutMs,
+                startMs = start
+            )
+            if (outcome.error == null && outcome.httpCode in 200..499) {
+                return outcome
+            }
+            lastOutcome = outcome
+            if (attempts.size > 1) {
+                DoHResolver.markIpFailed(host, cand.ip)
+            }
+        }
+        return lastOutcome!!
+    }
+
+    private fun executeSingleAttempt(
+        url: String,
+        host: String,
+        resolvedIp: String,
+        dnsSource: String,
+        port: Int,
+        postBody: RequestBody?,
+        readBody: Boolean,
+        timeoutMs: Long,
+        startMs: Long
+    ): HttpCallOutcome {
         var serverSocket: ServerSocket? = null
         var bridgeThread: Thread? = null
         val useFragment = RuleManager.tlsFragmentEnabled.value
@@ -123,10 +162,11 @@ object NetworkDiagnostics {
                     val initial = ProxyConnectionDispatcher.readInitialPacket(cIn)
                     if (initial != null && initial.second > 0) {
                         remoteSock = Socket().apply {
+                            try { bind(null) } catch (_: Exception) {}
                             DoHResolver.protectTcpSocket(this)
                             tcpNoDelay = true
                             soTimeout = timeoutMs.toInt()
-                            connect(InetSocketAddress(dnsRes.ip, port), timeoutMs.toInt())
+                            connect(InetSocketAddress(resolvedIp, port), timeoutMs.toInt())
                         }
                         val rIn = remoteSock.getInputStream()
                         val rOut = remoteSock.getOutputStream()
@@ -188,7 +228,7 @@ object NetworkDiagnostics {
 
             val reqBuilder = Request.Builder()
                 .url(url)
-                .header("User-Agent", "WattKit/1.2.0")
+                .header("User-Agent", "WattKit/1.2.1")
             if (postBody != null) {
                 reqBuilder.post(postBody)
             } else {
@@ -196,15 +236,15 @@ object NetworkDiagnostics {
             }
 
             client.newCall(reqBuilder.build()).execute().use { resp ->
-                val latency = System.currentTimeMillis() - start
+                val latency = System.currentTimeMillis() - startMs
                 val handshake = resp.handshake
                 val tlsVersion = handshake?.tlsVersion?.javaName ?: "TLS"
                 val x509 = handshake?.peerCertificates?.firstOrNull() as? X509Certificate
                 val cn = extractCn(x509?.subjectX500Principal?.name)
                 val body = if (readBody) (resp.body?.string() ?: "") else ""
                 return HttpCallOutcome(
-                    resolvedIp = dnsRes.ip,
-                    dnsSource = dnsRes.source,
+                    resolvedIp = resolvedIp,
+                    dnsSource = dnsSource,
                     httpCode = resp.code,
                     bodyText = body,
                     tlsProtocol = tlsVersion,
@@ -214,13 +254,13 @@ object NetworkDiagnostics {
             }
         } catch (e: Exception) {
             return HttpCallOutcome(
-                resolvedIp = dnsRes.ip,
-                dnsSource = dnsRes.source,
+                resolvedIp = resolvedIp,
+                dnsSource = dnsSource,
                 httpCode = 0,
                 bodyText = "",
                 tlsProtocol = "-",
                 certSubject = "-",
-                latencyMs = System.currentTimeMillis() - start,
+                latencyMs = System.currentTimeMillis() - startMs,
                 error = "${e.javaClass.simpleName}: ${e.message ?: "failed"}"
             )
         } finally {

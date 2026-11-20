@@ -21,6 +21,9 @@ class SmartDnsEngine(
     @Volatile
     private var upstreamServers: List<String> = listOf("223.5.5.5", "119.29.29.29")
 
+    @Volatile
+    private var lastGoodUpstream: String? = null
+
     fun updateUpstreamServers(physicalDnsAddresses: List<String>) {
         val cleaned = mutableListOf<String>()
         val deferredFakeDns = mutableListOf<String>()
@@ -44,6 +47,9 @@ class SmartDnsEngine(
             if (f !in cleaned) cleaned += f
         }
         upstreamServers = cleaned
+        if (lastGoodUpstream !in cleaned) {
+            lastGoodUpstream = null
+        }
     }
 
     fun handleDnsQuery(queryBytes: ByteArray, length: Int): ByteArray? {
@@ -87,22 +93,31 @@ class SmartDnsEngine(
 
     private fun forwardToUpstream(queryBytes: ByteArray, length: Int): ByteArray? {
         val servers = upstreamServers
-        for (dnsIp in servers) {
+        val preferred = lastGoodUpstream
+        val ordered = if (preferred != null && preferred in servers && servers.firstOrNull() != preferred) {
+            listOf(preferred) + servers.filter { it != preferred }
+        } else {
+            servers
+        }
+        for (dnsIp in ordered) {
             var socket: DatagramSocket? = null
             try {
                 socket = DatagramSocket()
                 protectUdp(socket)
-                socket.soTimeout = 1800
+                socket.soTimeout = 900
                 val target = InetAddress.getByName(dnsIp)
                 socket.send(DatagramPacket(queryBytes, length, target, 53))
                 val recvBuf = ByteArray(2048)
                 val recvPkt = DatagramPacket(recvBuf, recvBuf.size)
                 socket.receive(recvPkt)
                 if (recvPkt.length >= 12) {
+                    lastGoodUpstream = dnsIp
                     return recvBuf.copyOf(recvPkt.length)
                 }
             } catch (_: Exception) {
-                // Try next upstream DNS server
+                if (lastGoodUpstream == dnsIp) {
+                    lastGoodUpstream = null
+                }
             } finally {
                 try { socket?.close() } catch (_: Exception) {}
             }

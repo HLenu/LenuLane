@@ -16,6 +16,7 @@ import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.os.Process
 import android.util.Log
 import kotlinx.coroutines.*
@@ -345,6 +346,7 @@ class WattVpnService : VpnService() {
 
     private fun startTrafficMonitor() {
         trafficJob?.cancel()
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
         trafficJob = serviceScope.launch {
             val myUid = Process.myUid()
             var prevUidRx = TrafficStats.getUidRxBytes(myUid).coerceAtLeast(0L)
@@ -353,7 +355,9 @@ class WattVpnService : VpnService() {
             var prevProxyTx = LocalProxyServer.totalTxBytes.get()
 
             while (_isRunning.value) {
-                delay(1000)
+                val interactive = powerManager?.isInteractive ?: true
+                val intervalMs = if (interactive) 1000L else 5000L
+                delay(intervalMs)
                 val currUidRx = TrafficStats.getUidRxBytes(myUid).coerceAtLeast(0L)
                 val currUidTx = TrafficStats.getUidTxBytes(myUid).coerceAtLeast(0L)
                 val currProxyRx = LocalProxyServer.totalRxBytes.get()
@@ -364,8 +368,9 @@ class WattVpnService : VpnService() {
                 val deltaProxyRx = if (currProxyRx >= prevProxyRx) currProxyRx - prevProxyRx else 0L
                 val deltaProxyTx = if (currProxyTx >= prevProxyTx) currProxyTx - prevProxyTx else 0L
 
-                val deltaRx = maxOf(deltaUidRx, deltaProxyRx)
-                val deltaTx = maxOf(deltaUidTx, deltaProxyTx)
+                val seconds = intervalMs / 1000.0
+                val deltaRx = (maxOf(deltaUidRx, deltaProxyRx) / seconds).toLong()
+                val deltaTx = (maxOf(deltaUidTx, deltaProxyTx) / seconds).toLong()
 
                 _rxSpeed.value = formatSpeed(deltaRx)
                 _txSpeed.value = formatSpeed(deltaTx)

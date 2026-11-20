@@ -9,7 +9,6 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -31,8 +30,8 @@ class LocalProxyServer(
 
     @Volatile
     private var isRunning = false
-    private val executor = Executors.newCachedThreadPool()
-    private val dispatcher = executor.asCoroutineDispatcher()
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val dispatcher = Dispatchers.IO.limitedParallelism(32)
     private val scope = CoroutineScope(dispatcher + SupervisorJob())
 
     fun start() {
@@ -64,7 +63,6 @@ class LocalProxyServer(
         try { serverSocket?.close() } catch (_: Exception) {}
         serverSocket = null
         scope.cancel()
-        executor.shutdownNow()
     }
 
     private suspend fun handleClient(client: Socket) = withContext(Dispatchers.IO) {

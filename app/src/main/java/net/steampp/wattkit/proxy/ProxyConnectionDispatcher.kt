@@ -3,11 +3,14 @@ package net.steampp.wattkit.proxy
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.coroutineContext
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import net.steampp.wattkit.vpn.DnsPacketCodec
 import net.steampp.wattkit.vpn.FakeIpPool
 import java.io.EOFException
@@ -61,19 +64,30 @@ object ProxyConnectionDispatcher {
         val effectiveDomain = sniffedSni ?: cleanInitialHost
         val matchedRule = effectiveDomain?.let { RuleManager.findMatchingRule(it) }
 
-        val targetSocket = Socket()
+        val activeSocketRef = AtomicReference<Socket?>(null)
+        val cancelHandle = coroutineContext[Job]?.invokeOnCompletion {
+            try { activeSocketRef.getAndSet(null)?.close() } catch (_: Exception) {}
+        }
+        var targetSocket: Socket? = null
         var entryId = -1L
         var success = false
         val rxCounter = AtomicLong(0L)
         val startMs = System.currentTimeMillis()
 
-        try {
-            vpnProtect?.invoke(targetSocket)
-            targetSocket.tcpNoDelay = true
-            targetSocket.soTimeout = 30000
+        fun newProtectedSocket(): Socket = Socket().also { s ->
+            try { s.bind(null) } catch (_: Exception) {}
+            vpnProtect?.invoke(s)
+            s.tcpNoDelay = true
+            s.soTimeout = 30000
+            activeSocketRef.set(s)
+        }
 
+        try {
             var resolvedIp = ""
             var useTlsFragment = false
+            var preReadDownBuf: ByteArray? = null
+            var preReadDownLen = 0
+            var initialWrittenUpstream = false
 
             if (matchedRule != null) {
                 val hostDomain = effectiveDomain
@@ -85,43 +99,83 @@ object ProxyConnectionDispatcher {
 
                 when (strategy) {
                     AccelerationStrategy.DOH_TLS_FRAGMENT -> {
-                        val dohRes = DoHResolver.resolveWithSource(hostDomain)
-                        val destIp = dohRes?.ip
-                            ?: usableDirectIp(fallbackIp)
-                            ?: throw IOException("DoH resolve failed for $hostDomain")
-                        resolvedIp = destIp
-                        targetSocket.connect(InetSocketAddress(destIp, targetPort), 8000)
+                        val candidates = DoHResolver.resolveCandidates(hostDomain).map { it.ip }.ifEmpty {
+                            listOfNotNull(usableDirectIp(fallbackIp))
+                        }
+                        if (candidates.isEmpty()) throw IOException("DoH resolve failed for $hostDomain")
+
                         useTlsFragment = isTlsClientHello && RuleManager.tlsFragmentEnabled.value
+                        val attempts = candidates.take(2)
+                        var connectedSock: Socket? = null
+                        var lastErr: Exception? = null
+
+                        for (idx in attempts.indices) {
+                            val candIp = attempts[idx]
+                            val attemptSock = newProtectedSocket()
+                            try {
+                                attemptSock.connect(InetSocketAddress(candIp, targetPort), 6000)
+                                if (initialBuffer != null && bytesRead > 0) {
+                                    val tOut = attemptSock.getOutputStream()
+                                    TlsFragmenter.writeFragmented(tOut, initialBuffer, bytesRead, useTlsFragment)
+                                    initialWrittenUpstream = true
+                                }
+                                if (useTlsFragment && initialWrittenUpstream) {
+                                    // Verify ServerHello arrives cleanly; if DPI resets/closes candidate #1, fail over to #2.
+                                    val probeBuf = ByteArray(16384)
+                                    val n = attemptSock.getInputStream().read(probeBuf)
+                                    if (n <= 0) {
+                                        throw IOException("Immediate TLS handshake EOF from $candIp")
+                                    }
+                                    preReadDownBuf = probeBuf
+                                    preReadDownLen = n
+                                }
+                                connectedSock = attemptSock
+                                resolvedIp = candIp
+                                break
+                            } catch (e: Exception) {
+                                lastErr = e
+                                initialWrittenUpstream = false
+                                try { attemptSock.close() } catch (_: Exception) {}
+                                if (attempts.size > 1) {
+                                    DoHResolver.markIpFailed(hostDomain, candIp)
+                                }
+                            }
+                        }
+                        targetSocket = connectedSock ?: throw (lastErr ?: IOException("All candidates failed for $hostDomain"))
                     }
 
                     AccelerationStrategy.CLEAN_DNS_DIRECT -> {
-                        val dohRes = DoHResolver.resolveWithSource(hostDomain)
-                        val destIp = dohRes?.ip
+                        val destIp = DoHResolver.resolveWithSource(hostDomain)?.ip
                             ?: usableDirectIp(fallbackIp)
                             ?: throw IOException("DoH resolve failed for $hostDomain")
                         resolvedIp = destIp
-                        targetSocket.connect(InetSocketAddress(destIp, targetPort), 8000)
+                        targetSocket = newProtectedSocket().apply {
+                            connect(InetSocketAddress(destIp, targetPort), 8000)
+                        }
                     }
 
                     AccelerationStrategy.REVERSE_PROXY_MIRROR -> {
                         val mirrorHost = matchedRule.mirrorHost ?: hostDomain
                         val destPort = matchedRule.targetPort
-                        val dohRes = DoHResolver.resolveWithSource(mirrorHost)
-                        val destIp = dohRes?.ip ?: mirrorHost
+                        val destIp = DoHResolver.resolveWithSource(mirrorHost)?.ip ?: mirrorHost
                         resolvedIp = destIp
-                        targetSocket.connect(InetSocketAddress(destIp, destPort), 8000)
+                        targetSocket = newProtectedSocket().apply {
+                            connect(InetSocketAddress(destIp, destPort), 8000)
+                        }
                     }
 
                     AccelerationStrategy.UPSTREAM_PROXY -> {
                         resolvedIp = "${upstreamCfg.host}:${upstreamCfg.port}"
-                        connectViaUpstreamProxy(
-                            socket = targetSocket,
-                            proxyHost = upstreamCfg.host,
-                            proxyPort = upstreamCfg.port,
-                            isSocks5 = upstreamCfg.isSocks5,
-                            destHost = hostDomain,
-                            destPort = targetPort
-                        )
+                        targetSocket = newProtectedSocket().apply {
+                            connectViaUpstreamProxy(
+                                socket = this,
+                                proxyHost = upstreamCfg.host,
+                                proxyPort = upstreamCfg.port,
+                                isSocks5 = upstreamCfg.isSocks5,
+                                destHost = hostDomain,
+                                destPort = targetPort
+                            )
+                        }
                     }
                 }
 
@@ -140,7 +194,9 @@ object ProxyConnectionDispatcher {
                     ?: effectiveDomain?.let { DoHResolver.resolve(it) }
                     ?: throw IOException("No valid destination for ${effectiveDomain ?: fallbackIp}")
                 resolvedIp = destIp
-                targetSocket.connect(InetSocketAddress(destIp, targetPort), 8000)
+                targetSocket = newProtectedSocket().apply {
+                    connect(InetSocketAddress(destIp, targetPort), 8000)
+                }
                 val connectLatency = System.currentTimeMillis() - startMs
                 entryId = TrafficTelemetry.onConnectionStarted(
                     ruleId = null,
@@ -152,11 +208,16 @@ object ProxyConnectionDispatcher {
                 )
             }
 
-            val targetIn = targetSocket.getInputStream()
-            val targetOut = targetSocket.getOutputStream()
+            val sock = targetSocket
+            val targetIn = sock.getInputStream()
+            val targetOut = sock.getOutputStream()
 
-            // Forward initial payload (fragmented if DOH_TLS_FRAGMENT + ClientHello)
-            if (initialBuffer != null && bytesRead > 0) {
+            if (initialWrittenUpstream && bytesRead > 0) {
+                LocalProxyServer.totalTxBytes.addAndGet(bytesRead.toLong())
+                if (entryId > 0L) {
+                    TrafficTelemetry.onConnectionBytes(entryId, matchedRule?.id, 0L, bytesRead.toLong())
+                }
+            } else if (initialBuffer != null && bytesRead > 0) {
                 TlsFragmenter.writeFragmented(
                     output = targetOut,
                     data = initialBuffer,
@@ -169,10 +230,20 @@ object ProxyConnectionDispatcher {
                 }
             }
 
+            if (preReadDownBuf != null && preReadDownLen > 0) {
+                clientOut.write(preReadDownBuf, 0, preReadDownLen)
+                clientOut.flush()
+                rxCounter.addAndGet(preReadDownLen.toLong())
+                LocalProxyServer.totalRxBytes.addAndGet(preReadDownLen.toLong())
+                if (entryId > 0L) {
+                    TrafficTelemetry.onConnectionBytes(entryId, matchedRule?.id, preReadDownLen.toLong(), 0L)
+                }
+            }
+
             coroutineScope {
                 val up = launch {
                     pipe(clientIn, targetOut, isRx = false, entryId = entryId, ruleId = matchedRule?.id)
-                    try { targetSocket.shutdownOutput() } catch (_: Exception) {}
+                    try { sock.shutdownOutput() } catch (_: Exception) {}
                 }
                 val down = launch {
                     pipe(targetIn, clientOut, isRx = true, entryId = entryId, ruleId = matchedRule?.id, rxCounter = rxCounter)
@@ -207,7 +278,9 @@ object ProxyConnectionDispatcher {
             }
             return@withContext false
         } finally {
-            try { targetSocket.close() } catch (_: Exception) {}
+            cancelHandle?.dispose()
+            try { targetSocket?.close() } catch (_: Exception) {}
+            try { activeSocketRef.getAndSet(null)?.close() } catch (_: Exception) {}
             if (entryId > 0L) {
                 TrafficTelemetry.onConnectionFinished(
                     entryId = entryId,

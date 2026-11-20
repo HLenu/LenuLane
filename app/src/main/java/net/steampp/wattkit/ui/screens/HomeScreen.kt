@@ -88,7 +88,7 @@ fun HomeScreen(
                 subtitle = if (isVpnRunning) {
                     "${routingMode.displayName} · ${dohProvider.displayName}"
                 } else {
-                    "WattKit 游戏网络工具箱 v1.2.0"
+                    "WattKit 游戏网络工具箱 v1.2.1"
                 }
             )
             Spacer(modifier = Modifier.height(10.dp))
@@ -410,13 +410,20 @@ fun HomeScreen(
 @Composable
 private fun TelemetryStatColumn(label: String, value: String) {
     Column {
-        Text(text = label, fontSize = 11.sp, color = CupertinoColors.secondaryLabel)
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            maxLines = 1,
+            color = CupertinoColors.secondaryLabel
+        )
         Spacer(modifier = Modifier.height(3.dp))
         Text(
             text = value,
             fontSize = 14.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             color = CupertinoColors.label
         )
     }

@@ -301,7 +301,7 @@ fun SettingsScreen() {
         // Section 4: Architecture Specs
         item {
             CupertinoSection(
-                title = "系统底层架构 (v1.2.0)",
+                title = "系统底层架构 (v1.2.1)",
                 footer = "纯 Kotlin 进程内包引擎替代旧版原生子进程架构，全端零原生 SO 崩溃风险且无需系统 Root/CA 证书。"
             ) {
                 CupertinoCell(
@@ -374,7 +374,7 @@ fun SettingsScreen() {
                     iconBackgroundColor = CupertinoColors.systemGray2,
                     trailingContent = {
                         Text(
-                            text = "v1.2.0 (2026.11)",
+                            text = "v1.2.1 (2026.11)",
                             fontSize = 13.sp,
                             color = CupertinoColors.secondaryLabel
                         )

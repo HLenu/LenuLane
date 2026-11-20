@@ -1,14 +1,18 @@
 package net.steampp.wattkit.proxy
 
+import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 
 /**
  * RFC 5246 / RFC 8446 compliant TLS Record Fragmentation helper.
- * Splits an outbound TLS ClientHello record across multiple valid TLS Handshake records,
- * cutting squarely through the middle of the SNI hostname bytes so middlebox DPI cannot
- * extract the full SNI in one contiguous record while every TLS server reassembles cleanly.
+ * Splits an outbound TLS ClientHello record across 3 valid TLS Handshake records,
+ * cutting squarely through the midpoint of the SNI hostname bytes so middlebox DPI cannot
+ * extract the full SNI in one contiguous record while Akamai/Cloudflare/GitHub reassemble cleanly,
+ * with light socket flush pacing so records are sent across separate TCP segments.
  */
 object TlsFragmenter {
+    private const val TCP_SEGMENT_PACING_MS = 1L
+
     fun fragmentClientHello(data: ByteArray, length: Int): List<ByteArray> {
         if (length <= 0 || length > data.size) return emptyList()
         if (length <= 10) return listOf(data.copyOf(length))
@@ -31,7 +35,6 @@ object TlsFragmenter {
 
         val records = mutableListOf<ByteArray>()
         if (sniRange != null && sniRange.first >= payloadStart + 2 && sniRange.last < payloadEnd) {
-            // Split point inside the SNI host_name string (relative to data, >= payloadStart + 3 if len >= 2)
             val sniLen = sniRange.last - sniRange.first + 1
             val sniSplitAbs = if (sniLen >= 2) {
                 sniRange.first + (sniLen / 2)
@@ -79,9 +82,18 @@ object TlsFragmenter {
             return
         }
         val chunks = fragmentClientHello(data, length)
-        for (chunk in chunks) {
-            output.write(chunk)
+        val paceTcp = chunks.size > 1 && output !is ByteArrayOutputStream
+        for (i in chunks.indices) {
+            output.write(chunks[i])
             output.flush()
+            if (paceTcp && i < chunks.lastIndex) {
+                try {
+                    Thread.sleep(TCP_SEGMENT_PACING_MS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
         }
     }
 
