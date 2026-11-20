@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "WattKit"
+rootProject.name = "LenuLane"
 include(":app")
