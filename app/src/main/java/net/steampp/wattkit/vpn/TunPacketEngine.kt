@@ -9,10 +9,8 @@ import android.util.Log
 import kotlinx.coroutines.*
 import net.steampp.wattkit.proxy.DoHResolver
 import net.steampp.wattkit.proxy.ProxyConnectionDispatcher
-import net.steampp.wattkit.proxy.TrafficTelemetry
 import java.io.FileDescriptor
 import java.io.FileInputStream
-import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.DatagramPacket
@@ -27,7 +25,11 @@ import kotlin.collections.ArrayDeque
 
 /**
  * Pure-Kotlin in-process TUN packet engine (IPv4 TCP / UDP / ICMP).
- * Replaces the broken native BadVPN tun2socks subprocess + LocalSocket architecture.
+ * Features:
+ * - Os.poll() + Os.pipe() kernel wakeup (0% idle CPU, instant tear-down)
+ * - RFC 7323 TCP Window Scaling (up to 512 KB sliding window)
+ * - Dedicated background RTO retransmission timer & zombie session reaper
+ * - Direct Os.write() syscall on TUN descriptor
  */
 class TunPacketEngine(
     private val vpnInterface: ParcelFileDescriptor,
@@ -40,7 +42,14 @@ class TunPacketEngine(
         private const val TAG = "TunPacketEngine"
         private const val MAX_PACKET_SIZE = 32768
         private const val MAX_TCP_SEGMENT = 1360
-        private val SYN_ACK_MSS_OPTION = byteArrayOf(0x02, 0x04, 0x05, 0x50) // MSS = 1360
+        private const val MAX_IN_FLIGHT_BYTES = 524_288 // 512 KB with RFC 7323 WSOPT
+        private const val MAX_UNACKED_SEGMENTS = 384
+        private const val SERVER_WS_SHIFT = 7
+        private const val RTO_BASE_MS = 250L
+        private const val MAX_RETRANSMITS = 5
+        private const val HALF_OPEN_TIMEOUT_MS = 15_000L
+        private const val FIN_WAIT_TIMEOUT_MS = 15_000L
+        private const val IDLE_TIMEOUT_MS = 120_000L
         private val EOF_SENTINEL = ByteArray(0)
     }
 
@@ -58,8 +67,7 @@ class TunPacketEngine(
         val dstPort: Int
     )
 
-    private val tunIn = FileInputStream(vpnInterface.fileDescriptor)
-    private val tunOut = FileOutputStream(vpnInterface.fileDescriptor)
+    private val tunFd: FileDescriptor = vpnInterface.fileDescriptor
     private val tunWriteLock = Any()
 
     @Volatile
@@ -88,17 +96,27 @@ class TunPacketEngine(
         wakePipeRead = pipeFds?.getOrNull(0)
         wakePipeWrite = pipeFds?.getOrNull(1)
 
-        // Periodic cleanup for expired UDP NAT sessions
+        // Periodic TCP RTO retransmission & zombie session reaper (250ms tick)
         scope.launch {
+            var tickCount = 0
             while (running) {
-                delay(15_000)
-                val cutoff = System.currentTimeMillis() - 45_000L
-                val iterator = udpSessions.entries.iterator()
-                while (iterator.hasNext()) {
-                    val entry = iterator.next()
-                    if (entry.value.lastActiveMs < cutoff) {
-                        entry.value.close()
-                        iterator.remove()
+                delay(250)
+                if (!running) break
+                val now = System.currentTimeMillis()
+                for (session in tcpSessions.values) {
+                    session.onMaintenanceTick(now)
+                }
+                tickCount++
+                if (tickCount >= 60) {
+                    tickCount = 0
+                    val cutoff = now - 45_000L
+                    val iterator = udpSessions.entries.iterator()
+                    while (iterator.hasNext()) {
+                        val entry = iterator.next()
+                        if (entry.value.lastActiveMs < cutoff) {
+                            entry.value.close()
+                            iterator.remove()
+                        }
                     }
                 }
             }
@@ -106,7 +124,6 @@ class TunPacketEngine(
 
         readerThread = Thread({
             val buf = ByteArray(MAX_PACKET_SIZE)
-            val tunFd = vpnInterface.fileDescriptor
             val wakeReadFd = wakePipeRead
             val pollFds = if (wakeReadFd != null) {
                 arrayOf(
@@ -122,74 +139,79 @@ class TunPacketEngine(
             } else {
                 null
             }
-            Log.i(TAG, "In-process TUN packet engine started (poll=${pollFds != null})")
-            while (running) {
-                if (pollFds != null) {
-                    pollFds[0].revents = 0
-                    pollFds[1].revents = 0
-                    val ready = try {
-                        Os.poll(pollFds, -1)
-                    } catch (e: ErrnoException) {
-                        if (e.errno == OsConstants.EINTR) continue
-                        if (running) Log.d(TAG, "TUN poll stopped: ${e.message}")
-                        break
-                    } catch (_: Exception) {
-                        break
-                    }
-                    if (!running || ready < 0) break
-
-                    val wakeRevents = pollFds[1].revents.toInt()
-                    if ((wakeRevents and (OsConstants.POLLIN or OsConstants.POLLHUP or OsConstants.POLLERR or OsConstants.POLLNVAL)) != 0) {
-                        break
-                    }
-                    val tunRevents = pollFds[0].revents.toInt()
-                    if ((tunRevents and (OsConstants.POLLERR or OsConstants.POLLHUP or OsConstants.POLLNVAL)) != 0) {
-                        if (running) Log.d(TAG, "TUN descriptor closed")
-                        break
-                    }
-                    if ((tunRevents and OsConstants.POLLIN) == 0) {
-                        continue
-                    }
-
-                    val len = try {
-                        Os.read(tunFd, buf, 0, buf.size)
-                    } catch (e: ErrnoException) {
-                        if (e.errno == OsConstants.EAGAIN || e.errno == OsConstants.EINTR) {
-                            continue
-                        }
-                        if (running) Log.d(TAG, "TUN read ended: ${e.message}")
-                        break
-                    } catch (_: Exception) {
-                        if (running) Log.d(TAG, "TUN read stream ended")
-                        break
-                    }
-                    if (len < 0) break
-                    if (len >= 20) {
-                        dispatchPacket(buf, len)
-                    }
-                } else {
-                    val len = try {
-                        tunIn.read(buf)
-                    } catch (_: Exception) {
-                        if (running) Log.d(TAG, "TUN read stream ended")
-                        break
-                    }
-                    if (len < 0) break
-                    if (len == 0) {
-                        try {
-                            Thread.sleep(2)
-                        } catch (_: InterruptedException) {
+            val fallbackIn = if (pollFds == null) FileInputStream(tunFd) else null
+            Log.i(TAG, "In-process TUN packet engine started (poll=${pollFds != null}, WSOPT enabled)")
+            try {
+                while (running) {
+                    if (pollFds != null) {
+                        pollFds[0].revents = 0
+                        pollFds[1].revents = 0
+                        val ready = try {
+                            Os.poll(pollFds, -1)
+                        } catch (e: ErrnoException) {
+                            if (e.errno == OsConstants.EINTR) continue
+                            if (running) Log.d(TAG, "TUN poll stopped: ${e.message}")
+                            break
+                        } catch (_: Exception) {
                             break
                         }
-                        continue
-                    }
-                    if (len >= 20) {
-                        dispatchPacket(buf, len)
+                        if (!running || ready < 0) break
+
+                        val wakeRevents = pollFds[1].revents.toInt()
+                        if ((wakeRevents and (OsConstants.POLLIN or OsConstants.POLLHUP or OsConstants.POLLERR or OsConstants.POLLNVAL)) != 0) {
+                            break
+                        }
+                        val tunRevents = pollFds[0].revents.toInt()
+                        if ((tunRevents and (OsConstants.POLLERR or OsConstants.POLLHUP or OsConstants.POLLNVAL)) != 0) {
+                            if (running) Log.d(TAG, "TUN descriptor closed")
+                            break
+                        }
+                        if ((tunRevents and OsConstants.POLLIN) == 0) {
+                            continue
+                        }
+
+                        val len = try {
+                            Os.read(tunFd, buf, 0, buf.size)
+                        } catch (e: ErrnoException) {
+                            if (e.errno == OsConstants.EAGAIN || e.errno == OsConstants.EINTR) {
+                                continue
+                            }
+                            if (running) Log.d(TAG, "TUN read ended: ${e.message}")
+                            break
+                        } catch (_: Exception) {
+                            if (running) Log.d(TAG, "TUN read stream ended")
+                            break
+                        }
+                        if (len < 0) break
+                        if (len >= 20) {
+                            dispatchPacket(buf, len)
+                        }
+                    } else {
+                        val len = try {
+                            fallbackIn?.read(buf) ?: -1
+                        } catch (_: Exception) {
+                            if (running) Log.d(TAG, "TUN read stream ended")
+                            break
+                        }
+                        if (len < 0) break
+                        if (len == 0) {
+                            try {
+                                Thread.sleep(2)
+                            } catch (_: InterruptedException) {
+                                break
+                            }
+                            continue
+                        }
+                        if (len >= 20) {
+                            dispatchPacket(buf, len)
+                        }
                     }
                 }
+            } finally {
+                try { fallbackIn?.close() } catch (_: Exception) {}
             }
             Log.i(TAG, "TUN reader thread stopped")
-        }, "WattKit-TunReader").apply { start() }
+        }, "LenuLane-TunReader").apply { start() }
     }
 
     fun stop() {
@@ -215,8 +237,6 @@ class TunPacketEngine(
         scope.cancel()
         closeFdQuietly(wakePipeWrite); wakePipeWrite = null
         closeFdQuietly(wakePipeRead); wakePipeRead = null
-        try { tunIn.close() } catch (_: Exception) {}
-        try { tunOut.close() } catch (_: Exception) {}
     }
 
     private fun closeFdQuietly(fd: FileDescriptor?) {
@@ -230,9 +250,9 @@ class TunPacketEngine(
     private fun writeTunPacket(packet: ByteArray) {
         if (!running) return
         synchronized(tunWriteLock) {
-            if (!running) return
+            if (!running || !tunFd.valid()) return
             try {
-                tunOut.write(packet, 0, packet.size)
+                Os.write(tunFd, packet, 0, packet.size)
             } catch (_: Exception) {
             }
         }
@@ -323,7 +343,8 @@ class TunPacketEngine(
                 }
 
                 if (isBareSyn) {
-                    val session = TunTcpSession(key, seqNum, window)
+                    val clientWsShift = PacketChecksum.parseTcpWindowScale(pkt, ihl, dataOffset)
+                    val session = TunTcpSession(key, seqNum, window, clientWsShift)
                     val race = tcpSessions.putIfAbsent(key, session)
                     if (race == null) {
                         session.start()
@@ -425,22 +446,37 @@ class TunPacketEngine(
 
     private data class SentSegment(
         val endSeq: Long,
-        val packet: ByteArray
+        val packet: ByteArray,
+        var sentAtMs: Long,
+        var retransmitCount: Int = 0
     )
 
     private inner class TunTcpSession(
         private val key: TcpKey,
         private val initialClientSynSeq: Long,
-        initialWindow: Int
+        initialRawWindow: Int,
+        clientWsShift: Int?
     ) {
         private val stateLock = Object()
+        private val createdAtMs = System.currentTimeMillis()
+        @Volatile
+        private var lastActivityMs = createdAtMs
+
+        private val windowScalingActive = clientWsShift != null
+        private val clientShift = clientWsShift ?: 0
+        private val synAckOptions = if (windowScalingActive) {
+            PacketChecksum.SYN_ACK_MSS_WS_OPTION
+        } else {
+            PacketChecksum.SYN_ACK_MSS_ONLY_OPTION
+        }
+
         private var clientNextSeq: Long = (initialClientSynSeq + 1L) and 0xFFFFFFFFL
         private val initialServerSeq: Long =
             ((System.nanoTime() xor (key.srcPort.toLong() shl 16) xor key.dstPort.toLong()) and 0x7FFFFFFFL)
                 .coerceAtLeast(1000L)
         private var serverNextSeq: Long = (initialServerSeq + 1L) and 0xFFFFFFFFL
         private var lastAckFromClient: Long = initialServerSeq
-        private var clientWindow: Int = initialWindow.coerceIn(1, 65535)
+        private var effectiveClientWindow: Int = initialRawWindow.coerceIn(1, 65535)
         private var hasReceivedAck = false
         private var dupAckCount = 0
         private var finFromClientReceived = false
@@ -454,6 +490,11 @@ class TunPacketEngine(
 
         private val clientQueue = LinkedBlockingQueue<ByteArray>()
         private var relayJob: Job? = null
+
+        private fun advertisedReceiveWindow(): Int {
+            // Queue is unbounded in memory; advertise generous receive window (65535 * 128 when scaled).
+            return if (windowScalingActive) (MAX_IN_FLIGHT_BYTES ushr SERVER_WS_SHIFT).coerceIn(1, 65535) else 65535
+        }
 
         private val queueInput = object : InputStream() {
             private var curBuf: ByteArray? = null
@@ -537,7 +578,6 @@ class TunPacketEngine(
         }
 
         fun start() {
-            // Send SYN-ACK immediately
             val synAck = PacketChecksum.buildIpv4TcpPacket(
                 srcIp = key.dstIp,
                 srcPort = key.dstPort,
@@ -547,7 +587,7 @@ class TunPacketEngine(
                 ackNum = clientNextSeq,
                 tcpFlags = PacketChecksum.TCP_SYN or PacketChecksum.TCP_ACK,
                 windowSize = 65535,
-                options = SYN_ACK_MSS_OPTION
+                options = synAckOptions
             )
             writeTunPacket(synAck)
 
@@ -580,9 +620,11 @@ class TunPacketEngine(
         }
 
         fun handleSynRetransmit(seqNum: Long) {
+            val synAck: ByteArray?
             synchronized(stateLock) {
                 if (seqNum != initialClientSynSeq || closed) return
-                val synAck = PacketChecksum.buildIpv4TcpPacket(
+                lastActivityMs = System.currentTimeMillis()
+                synAck = PacketChecksum.buildIpv4TcpPacket(
                     srcIp = key.dstIp,
                     srcPort = key.dstPort,
                     dstIp = key.srcIp,
@@ -591,10 +633,48 @@ class TunPacketEngine(
                     ackNum = clientNextSeq,
                     tcpFlags = PacketChecksum.TCP_SYN or PacketChecksum.TCP_ACK,
                     windowSize = 65535,
-                    options = SYN_ACK_MSS_OPTION
+                    options = synAckOptions
                 )
+            }
+            if (synAck != null) {
                 writeTunPacket(synAck)
             }
+        }
+
+        fun onMaintenanceTick(now: Long) {
+            var retransmitPkt: ByteArray? = null
+            var shouldCloseZombie = false
+
+            synchronized(stateLock) {
+                if (closed) return
+
+                // Reclaim half-open, FIN-stalled, or long-idle sessions
+                val idleMs = now - lastActivityMs
+                if ((!hasReceivedAck && (now - createdAtMs) > HALF_OPEN_TIMEOUT_MS) ||
+                    ((finFromClientReceived || serverFinSent) && idleMs > FIN_WAIT_TIMEOUT_MS) ||
+                    (idleMs > IDLE_TIMEOUT_MS)
+                ) {
+                    shouldCloseZombie = true
+                } else if (unackedSegments.isNotEmpty()) {
+                    val head = unackedSegments.first()
+                    val rto = (RTO_BASE_MS shl head.retransmitCount.coerceAtMost(3)).coerceAtMost(2000L)
+                    if (now - head.sentAtMs >= rto) {
+                        if (head.retransmitCount >= MAX_RETRANSMITS) {
+                            shouldCloseZombie = true
+                        } else {
+                            head.retransmitCount++
+                            head.sentAtMs = now
+                            retransmitPkt = head.packet
+                        }
+                    }
+                }
+            }
+
+            if (shouldCloseZombie) {
+                forceClose()
+                return
+            }
+            retransmitPkt?.let { writeTunPacket(it) }
         }
 
         fun handleInbound(
@@ -604,13 +684,14 @@ class TunPacketEngine(
             seqNum: Long,
             ackNum: Long,
             flags: Int,
-            window: Int
+            rawWindow: Int
         ) {
             if ((flags and PacketChecksum.TCP_RST) != 0) {
                 forceClose()
                 return
             }
 
+            val now = System.currentTimeMillis()
             val ackSeqSnapshot: Long
             val ackClientSeqSnapshot: Long
             var sendAck = false
@@ -618,10 +699,17 @@ class TunPacketEngine(
 
             synchronized(stateLock) {
                 if (closed) return
+                lastActivityMs = now
+
+                val scaledWindow = if (windowScalingActive) {
+                    (rawWindow shl clientShift).coerceIn(0, MAX_IN_FLIGHT_BYTES)
+                } else {
+                    rawWindow.coerceIn(0, 65535)
+                }
 
                 if ((flags and PacketChecksum.TCP_ACK) != 0) {
                     hasReceivedAck = true
-                    clientWindow = window.coerceIn(0, 65535)
+                    effectiveClientWindow = scaledWindow
                     if (seqDiff(ackNum, lastAckFromClient) > 0 && seqDiff(ackNum, serverNextSeq) <= 0) {
                         lastAckFromClient = ackNum
                         dupAckCount = 0
@@ -640,11 +728,13 @@ class TunPacketEngine(
                     ) {
                         dupAckCount++
                         if (dupAckCount == 3 && unackedSegments.isNotEmpty()) {
-                            fastRetransmitPkt = unackedSegments.first().packet
+                            val head = unackedSegments.first()
+                            head.sentAtMs = now
+                            fastRetransmitPkt = head.packet
                         }
                     }
                 } else {
-                    clientWindow = window.coerceIn(0, 65535)
+                    effectiveClientWindow = scaledWindow
                 }
 
                 if (payloadLen > 0) {
@@ -670,13 +760,11 @@ class TunPacketEngine(
                         }
                         sendAck = true
                     } else if (diff > 0) {
-                        // Future out-of-order segment -> buffer bounded slice & reply duplicate ACK
-                        if (oooSegments.size < 16 && !oooSegments.containsKey(seqNum)) {
+                        if (oooSegments.size < 32 && !oooSegments.containsKey(seqNum)) {
                             oooSegments[seqNum] = pkt.copyOfRange(payloadOffset, payloadOffset + payloadLen)
                         }
                         sendAck = true
                     } else {
-                        // Duplicate segment -> reply current ACK
                         sendAck = true
                     }
                 }
@@ -706,7 +794,7 @@ class TunPacketEngine(
                     seqNum = ackSeqSnapshot,
                     ackNum = ackClientSeqSnapshot,
                     tcpFlags = PacketChecksum.TCP_ACK,
-                    windowSize = 65535
+                    windowSize = advertisedReceiveWindow()
                 )
                 writeTunPacket(ackPkt)
             }
@@ -716,18 +804,21 @@ class TunPacketEngine(
             val segSeq: Long
             val ackSnap: Long
             var timeoutRetransmit: ByteArray? = null
+            val winSize = advertisedReceiveWindow()
 
             synchronized(stateLock) {
                 var waitedMs = 0L
                 while (!closed && waitedMs < 500L) {
-                    val effectiveWin = if (hasReceivedAck) clientWindow else 65535
-                    val maxInFlight = effectiveWin.coerceAtMost(65535)
+                    val maxInFlight = if (hasReceivedAck) {
+                        effectiveClientWindow.coerceAtMost(MAX_IN_FLIGHT_BYTES)
+                    } else {
+                        65535
+                    }
                     val inFlight = seqDiff(serverNextSeq, lastAckFromClient)
                     if (maxInFlight > 0 && inFlight < maxInFlight) {
                         break
                     }
                     if (maxInFlight == 0 && waitedMs >= 250L) {
-                        // Allow 1 window probe after zero-window backoff
                         break
                     }
                     val step = 50L
@@ -738,11 +829,15 @@ class TunPacketEngine(
                     }
                     waitedMs += step
                     if (!closed && waitedMs >= 250L && unackedSegments.isNotEmpty()) {
-                        timeoutRetransmit = unackedSegments.first().packet
+                        val head = unackedSegments.first()
+                        head.sentAtMs = System.currentTimeMillis()
+                        timeoutRetransmit = head.packet
                         break
                     }
                 }
                 if (closed) return
+                val now = System.currentTimeMillis()
+                lastActivityMs = now
                 segSeq = serverNextSeq
                 ackSnap = clientNextSeq
                 serverNextSeq = (serverNextSeq + length) and 0xFFFFFFFFL
@@ -758,17 +853,18 @@ class TunPacketEngine(
                 seqNum = segSeq,
                 ackNum = ackSnap,
                 tcpFlags = PacketChecksum.TCP_PSH or PacketChecksum.TCP_ACK,
-                windowSize = 65535,
+                windowSize = winSize,
                 payload = buf,
                 payloadOffset = offset,
                 payloadLen = length
             )
+            val sentNow = System.currentTimeMillis()
             synchronized(stateLock) {
                 if (!closed) {
-                    while (unackedSegments.size >= 64) {
+                    while (unackedSegments.size >= MAX_UNACKED_SEGMENTS) {
                         unackedSegments.removeFirst()
                     }
-                    unackedSegments.addLast(SentSegment((segSeq + length) and 0xFFFFFFFFL, tcpPkt))
+                    unackedSegments.addLast(SentSegment((segSeq + length) and 0xFFFFFFFFL, tcpPkt, sentNow))
                 }
             }
             writeTunPacket(tcpPkt)
@@ -780,6 +876,7 @@ class TunPacketEngine(
             synchronized(stateLock) {
                 if (serverFinSent || closed) return
                 serverFinSent = true
+                lastActivityMs = System.currentTimeMillis()
                 finSeq = serverNextSeq
                 serverNextSeq = (serverNextSeq + 1L) and 0xFFFFFFFFL
                 ackSnap = clientNextSeq
@@ -792,7 +889,7 @@ class TunPacketEngine(
                 seqNum = finSeq,
                 ackNum = ackSnap,
                 tcpFlags = PacketChecksum.TCP_FIN or PacketChecksum.TCP_ACK,
-                windowSize = 65535
+                windowSize = advertisedReceiveWindow()
             )
             writeTunPacket(finPkt)
         }

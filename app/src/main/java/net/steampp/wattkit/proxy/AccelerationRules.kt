@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONArray
 import org.json.JSONObject
 
 enum class RuleCategory(val displayName: String) {
@@ -40,6 +41,17 @@ enum class RoutingMode(val displayName: String, val subtitle: String) {
     }
 }
 
+enum class AppSplitMode(val displayName: String, val badge: String) {
+    ALL_APPS("全部应用", "全局"),
+    ONLY_SELECTED("仅加速选中应用", "白名单"),
+    BYPASS_SELECTED("绕过选中应用", "黑名单");
+
+    companion object {
+        fun fromName(name: String?): AppSplitMode =
+            entries.firstOrNull { it.name == name } ?: ALL_APPS
+    }
+}
+
 data class UpstreamProxyConfig(
     val enabled: Boolean = false,
     val host: String = "127.0.0.1",
@@ -56,7 +68,8 @@ data class AccelerationRule(
     val strategy: AccelerationStrategy = AccelerationStrategy.DOH_TLS_FRAGMENT,
     val mirrorHost: String? = null,
     val targetPort: Int = 443,
-    val isEnabled: Boolean = true
+    val isEnabled: Boolean = true,
+    val isCustom: Boolean = false
 )
 
 object RuleManager {
@@ -64,9 +77,13 @@ object RuleManager {
     private const val PREFS_NAME = "wattkit_rules"
     private const val KEY_DISABLED = "disabled_rule_ids"
     private const val KEY_STRATEGIES = "rule_strategies_json"
+    private const val KEY_CUSTOM_RULES_JSON = "custom_rules_json"
     private const val KEY_ROUTING_MODE = "routing_mode"
     private const val KEY_DOH_PROVIDER = "doh_provider"
     private const val KEY_TLS_FRAGMENT = "tls_fragment_enabled"
+    private const val KEY_TLS_DESYNC_MODE = "tls_desync_mode"
+    private const val KEY_APP_SPLIT_MODE = "app_split_mode"
+    private const val KEY_APP_SPLIT_PACKAGES = "app_split_packages"
     private const val KEY_UPSTREAM_ENABLED = "upstream_enabled"
     private const val KEY_UPSTREAM_HOST = "upstream_host"
     private const val KEY_UPSTREAM_PORT = "upstream_port"
@@ -83,6 +100,15 @@ object RuleManager {
 
     private val _tlsFragmentEnabled = MutableStateFlow(true)
     val tlsFragmentEnabled = _tlsFragmentEnabled.asStateFlow()
+
+    private val _tlsDesyncMode = MutableStateFlow(TlsDesyncMode.ADAPTIVE)
+    val tlsDesyncMode = _tlsDesyncMode.asStateFlow()
+
+    private val _appSplitMode = MutableStateFlow(AppSplitMode.ALL_APPS)
+    val appSplitMode = _appSplitMode.asStateFlow()
+
+    private val _selectedAppPackages = MutableStateFlow<Set<String>>(emptySet())
+    val selectedAppPackages = _selectedAppPackages.asStateFlow()
 
     private val _upstreamProxy = MutableStateFlow(UpstreamProxyConfig())
     val upstreamProxy = _upstreamProxy.asStateFlow()
@@ -408,8 +434,12 @@ object RuleManager {
         prefs = sp
         val disabled = sp.getStringSet(KEY_DISABLED, emptySet()) ?: emptySet()
         val strategyMap = parseStrategyMap(sp.getString(KEY_STRATEGIES, null))
+        val savedCustomRules = parseCustomRules(sp.getString(KEY_CUSTOM_RULES_JSON, null))
 
         synchronized(lock) {
+            allRules.clear()
+            allRules.addAll(savedCustomRules)
+            allRules.addAll(defaultRules)
             for (i in allRules.indices) {
                 val r = allRules[i]
                 val enabled = r.id !in disabled
@@ -432,6 +462,9 @@ object RuleManager {
         _dohProvider.value = provider
         DoHResolver.activeProvider = provider
         _tlsFragmentEnabled.value = sp.getBoolean(KEY_TLS_FRAGMENT, true)
+        _tlsDesyncMode.value = TlsDesyncMode.fromName(sp.getString(KEY_TLS_DESYNC_MODE, null))
+        _appSplitMode.value = AppSplitMode.fromName(sp.getString(KEY_APP_SPLIT_MODE, null))
+        _selectedAppPackages.value = (sp.getStringSet(KEY_APP_SPLIT_PACKAGES, emptySet()) ?: emptySet()).toSet()
         _upstreamProxy.value = UpstreamProxyConfig(
             enabled = sp.getBoolean(KEY_UPSTREAM_ENABLED, false),
             host = sp.getString(KEY_UPSTREAM_HOST, "127.0.0.1") ?: "127.0.0.1",
@@ -441,8 +474,52 @@ object RuleManager {
 
         Log.i(
             TAG,
-            "Initialized: ${allRules.count { it.isEnabled }}/${allRules.size} rules enabled, mode=${_routingMode.value}, doh=${provider.id}"
+            "Initialized: ${allRules.count { it.isEnabled }}/${allRules.size} rules enabled, mode=${_routingMode.value}, doh=${provider.id}, appSplit=${_appSplitMode.value}"
         )
+    }
+
+    fun addCustomRule(
+        name: String,
+        domainInput: String,
+        category: RuleCategory = RuleCategory.TOOLS,
+        strategy: AccelerationStrategy = AccelerationStrategy.DOH_TLS_FRAGMENT
+    ): Boolean {
+        val cleanName = name.trim()
+        val domains = domainInput
+            .split(',', ';', '\n', ' ')
+            .map { it.trim().lowercase().trimEnd('.') }
+            .filter { it.isNotEmpty() && it.contains('.') }
+            .distinct()
+        if (cleanName.isEmpty() || domains.isEmpty()) return false
+
+        val safeStrategy = if (strategy == AccelerationStrategy.REVERSE_PROXY_MIRROR) {
+            AccelerationStrategy.DOH_TLS_FRAGMENT
+        } else {
+            strategy
+        }
+        val customRule = AccelerationRule(
+            id = "custom_${System.currentTimeMillis()}",
+            name = cleanName,
+            description = "用户自定义规则 · ${domains.joinToString(", ")}",
+            category = category,
+            domains = domains,
+            strategy = safeStrategy,
+            isEnabled = true,
+            isCustom = true
+        )
+        synchronized(lock) {
+            allRules.add(0, customRule)
+        }
+        persistCustomRules()
+        return true
+    }
+
+    fun removeCustomRule(id: String) {
+        synchronized(lock) {
+            allRules.removeAll { it.id == id && it.isCustom }
+        }
+        persistCustomRules()
+        persistDisabledIds()
     }
 
     fun setRuleEnabled(id: String, enabled: Boolean) {
@@ -486,6 +563,21 @@ object RuleManager {
     fun setTlsFragmentEnabled(enabled: Boolean) {
         _tlsFragmentEnabled.value = enabled
         prefs?.edit()?.putBoolean(KEY_TLS_FRAGMENT, enabled)?.apply()
+    }
+
+    fun setTlsDesyncMode(mode: TlsDesyncMode) {
+        _tlsDesyncMode.value = mode
+        prefs?.edit()?.putString(KEY_TLS_DESYNC_MODE, mode.name)?.apply()
+    }
+
+    fun setAppSplitConfig(mode: AppSplitMode, packages: Set<String>) {
+        val clean = packages.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        _appSplitMode.value = mode
+        _selectedAppPackages.value = clean
+        prefs?.edit()
+            ?.putString(KEY_APP_SPLIT_MODE, mode.name)
+            ?.putStringSet(KEY_APP_SPLIT_PACKAGES, clean)
+            ?.apply()
     }
 
     fun setUpstreamProxy(config: UpstreamProxyConfig) {
@@ -559,6 +651,62 @@ object RuleManager {
             }
         }
         prefs?.edit()?.putString(KEY_STRATEGIES, json.toString())?.apply()
+    }
+
+    private fun persistCustomRules() {
+        val arr = JSONArray()
+        synchronized(lock) {
+            for (rule in allRules) {
+                if (!rule.isCustom) continue
+                val obj = JSONObject().apply {
+                    put("id", rule.id)
+                    put("name", rule.name)
+                    put("category", rule.category.name)
+                    put("strategy", rule.strategy.name)
+                    val domArr = JSONArray()
+                    rule.domains.forEach { domArr.put(it) }
+                    put("domains", domArr)
+                }
+                arr.put(obj)
+            }
+        }
+        prefs?.edit()?.putString(KEY_CUSTOM_RULES_JSON, arr.toString())?.apply()
+    }
+
+    private fun parseCustomRules(raw: String?): List<AccelerationRule> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            val list = mutableListOf<AccelerationRule>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id")
+                val name = obj.optString("name")
+                val domArr = obj.optJSONArray("domains") ?: continue
+                val domains = mutableListOf<String>()
+                for (j in 0 until domArr.length()) {
+                    val d = domArr.optString(j).trim().lowercase()
+                    if (d.isNotEmpty()) domains += d
+                }
+                if (id.isBlank() || name.isBlank() || domains.isEmpty()) continue
+                val cat = RuleCategory.entries.firstOrNull { it.name == obj.optString("category") }
+                    ?: RuleCategory.TOOLS
+                val strat = AccelerationStrategy.fromName(obj.optString("strategy"))
+                    ?: AccelerationStrategy.DOH_TLS_FRAGMENT
+                list += AccelerationRule(
+                    id = id,
+                    name = name,
+                    description = "用户自定义规则 · ${domains.joinToString(", ")}",
+                    category = cat,
+                    domains = domains,
+                    strategy = strat,
+                    isCustom = true
+                )
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     private fun parseStrategyMap(raw: String?): Map<String, AccelerationStrategy> {

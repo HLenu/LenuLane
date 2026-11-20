@@ -95,4 +95,42 @@ class PacketChecksumAndTunTest {
         val pseudo = PacketChecksum.pseudoHeaderSum(srcIp, dstIp, PacketChecksum.PROTO_TCP, tcpLen)
         check(PacketChecksum.internetChecksum(pkt, 20, tcpLen, pseudo) == 0)
     }
+
+    @Test fun tcpWindowScaleOptionParsingAndSynAckEncodingWorkCleanly() {
+        val synPkt = PacketChecksum.buildIpv4TcpPacket(
+            srcIp = DnsPacketCodec.ipStringToInt("10.0.0.2")!!,
+            srcPort = 51234,
+            dstIp = DnsPacketCodec.ipStringToInt("198.18.0.10")!!,
+            dstPort = 443,
+            seqNum = 100L,
+            ackNum = 0L,
+            tcpFlags = PacketChecksum.TCP_SYN,
+            windowSize = 65535,
+            options = PacketChecksum.SYN_ACK_MSS_WS_OPTION
+        )
+        check(PacketChecksum.internetChecksum(synPkt, 0, 20) == 0)
+        val tcpLen = synPkt.size - 20
+        val pseudo = PacketChecksum.pseudoHeaderSum(
+            DnsPacketCodec.ipStringToInt("10.0.0.2")!!,
+            DnsPacketCodec.ipStringToInt("198.18.0.10")!!,
+            PacketChecksum.PROTO_TCP,
+            tcpLen
+        )
+        check(PacketChecksum.internetChecksum(synPkt, 20, tcpLen, pseudo) == 0)
+
+        val parsedShift = PacketChecksum.parseTcpWindowScale(synPkt, 20, 28)
+        check(parsedShift == 7) { "Expected WSOPT shift=7, got $parsedShift" }
+
+        val mssOnlyPkt = PacketChecksum.buildIpv4TcpPacket(
+            srcIp = DnsPacketCodec.ipStringToInt("10.0.0.2")!!,
+            srcPort = 51234,
+            dstIp = DnsPacketCodec.ipStringToInt("198.18.0.10")!!,
+            dstPort = 443,
+            seqNum = 100L,
+            ackNum = 0L,
+            tcpFlags = PacketChecksum.TCP_SYN,
+            options = PacketChecksum.SYN_ACK_MSS_ONLY_OPTION
+        )
+        check(PacketChecksum.parseTcpWindowScale(mssOnlyPkt, 20, 24) == null)
+    }
 }

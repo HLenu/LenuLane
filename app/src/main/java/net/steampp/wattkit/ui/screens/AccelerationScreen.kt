@@ -1,5 +1,6 @@
 package net.steampp.wattkit.ui.screens
 
+import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -10,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,11 +28,20 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.steampp.wattkit.proxy.*
 import net.steampp.wattkit.ui.cupertino.*
 import java.util.Locale
+
+private data class InstalledAppEntry(
+    val packageName: String,
+    val label: String
+)
 
 @Composable
 fun AccelerationScreen(
@@ -39,10 +50,14 @@ fun AccelerationScreen(
     onRestartVpn: () -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val rules = RuleManager.allRules
     val routingMode by RuleManager.routingMode.collectAsState()
     val dohProvider by RuleManager.dohProvider.collectAsState()
     val tlsFragmentEnabled by RuleManager.tlsFragmentEnabled.collectAsState()
+    val tlsDesyncMode by RuleManager.tlsDesyncMode.collectAsState()
+    val appSplitMode by RuleManager.appSplitMode.collectAsState()
+    val selectedAppPackages by RuleManager.selectedAppPackages.collectAsState()
     val upstreamProxy by RuleManager.upstreamProxy.collectAsState()
     val ruleStats by TrafficTelemetry.ruleStats.collectAsState()
 
@@ -51,6 +66,10 @@ fun AccelerationScreen(
     var expandedRuleId by remember { mutableStateOf<String?>(null) }
     var showEngineSettings by remember { mutableStateOf(true) }
     var showUpstreamDialog by remember { mutableStateOf(false) }
+    var showAppSplitDialog by remember { mutableStateOf(false) }
+    var showCustomRuleDialog by remember { mutableStateOf(false) }
+    var isBenchmarkingDoh by remember { mutableStateOf(false) }
+    var dohLatencies by remember { mutableStateOf<Map<DoHProvider, Long>>(emptyMap()) }
 
     val filteredRules = remember(rules.toList(), selectedCategory, searchQuery) {
         rules.filter { rule ->
@@ -177,26 +196,68 @@ fun AccelerationScreen(
                             .background(CupertinoColors.separator)
                     )
 
-                    // DoH Node Selector
+                    // DoH Node Selector + One-tap Speed Benchmark
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 12.dp)
                     ) {
-                        Text(
-                            text = "防污染 DoH 解析节点",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = CupertinoColors.label
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "防污染 DoH 解析节点",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = CupertinoColors.label
+                            )
+                            Text(
+                                text = if (isBenchmarkingDoh) "测速中..." else "一键测速优选",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = CupertinoColors.brandPrimary,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable(enabled = !isBenchmarkingDoh) {
+                                        isBenchmarkingDoh = true
+                                        coroutineScope.launch {
+                                            val scores = DoHResolver.benchmarkAllProviders()
+                                            dohLatencies = scores
+                                            isBenchmarkingDoh = false
+                                            val fastest = scores.entries
+                                                .filter { it.value >= 0L }
+                                                .minByOrNull { it.value }
+                                            if (fastest != null) {
+                                                RuleManager.setDoHProvider(fastest.key)
+                                                Toast.makeText(
+                                                    context,
+                                                    "最优 DoH: ${fastest.key.displayName} (${fastest.value}ms)",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            } else {
+                                                Toast.makeText(context, "DoH 测速均超时，请检查网络", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             DoHProvider.entries.forEach { provider ->
+                                val rtt = dohLatencies[provider]
+                                val labelText = when {
+                                    rtt == null -> provider.displayName
+                                    rtt < 0L -> "${provider.displayName.substringBefore(" ")} (超时)"
+                                    else -> "${provider.displayName.substringBefore(" ")} ${rtt}ms"
+                                }
                                 CupertinoFilterPill(
-                                    text = provider.displayName,
+                                    text = labelText,
                                     isSelected = dohProvider == provider,
                                     onClick = {
                                         RuleManager.setDoHProvider(provider)
@@ -216,15 +277,64 @@ fun AccelerationScreen(
                     )
 
                     CupertinoCell(
-                        title = "RFC TLS 记录分片",
-                        subtitle = "将 ClientHello 按 SNI 中点拆分发送，绕过浅层 SNI 阻断",
+                        title = "TLS SNI 抗阻断分片",
+                        subtitle = if (tlsFragmentEnabled) {
+                            "当前模式: ${tlsDesyncMode.displayName}"
+                        } else {
+                            "已关闭 · ClientHello 整包直连发送"
+                        },
                         icon = Icons.AutoMirrored.Filled.CallSplit,
                         iconBackgroundColor = CupertinoColors.systemIndigo,
-                        showDivider = true,
+                        showDivider = !tlsFragmentEnabled,
                         trailingContent = {
                             CupertinoSwitch(
                                 checked = tlsFragmentEnabled,
                                 onCheckedChange = { RuleManager.setTlsFragmentEnabled(it) }
+                            )
+                        }
+                    )
+
+                    if (tlsFragmentEnabled) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 58.dp, end = 16.dp, bottom = 10.dp)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            TlsDesyncMode.entries.forEach { mode ->
+                                CupertinoFilterPill(
+                                    text = mode.displayName,
+                                    isSelected = tlsDesyncMode == mode,
+                                    onClick = { RuleManager.setTlsDesyncMode(mode) }
+                                )
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp)
+                                .height(0.5.dp)
+                                .background(CupertinoColors.separator)
+                        )
+                    }
+
+                    CupertinoCell(
+                        title = "分应用智能分流",
+                        subtitle = when (appSplitMode) {
+                            AppSplitMode.ALL_APPS -> "全局模式 · 代理所有应用命中的规则流量"
+                            AppSplitMode.ONLY_SELECTED -> "白名单 · 仅加速已选 ${selectedAppPackages.size} 个应用"
+                            AppSplitMode.BYPASS_SELECTED -> "黑名单 · 已选 ${selectedAppPackages.size} 个应用完全直连绕过"
+                        },
+                        icon = Icons.Default.Apps,
+                        iconBackgroundColor = if (appSplitMode == AppSplitMode.ALL_APPS) CupertinoColors.brandSecondary else CupertinoColors.brandPrimary,
+                        showDivider = true,
+                        onClick = { showAppSplitDialog = true },
+                        trailingContent = {
+                            Icon(
+                                imageVector = Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = CupertinoColors.tertiaryLabel
                             )
                         }
                     )
@@ -283,16 +393,33 @@ fun AccelerationScreen(
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Section 4: Rules List Header
+        // Section 4: Rules List Header + Add Custom Rule Button
         item {
-            Text(
-                text = "服务规则 (${rules.count { it.isEnabled }}/${rules.size} 启用 · 显示 ${filteredRules.size}) · 点击条目可调策略".uppercase(),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-                color = CupertinoColors.secondaryLabel,
-                letterSpacing = 0.4.sp,
-                modifier = Modifier.padding(start = 16.dp, bottom = 6.dp)
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 8.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "服务规则 (${rules.count { it.isEnabled }}/${rules.size} 启用 · 显示 ${filteredRules.size})".uppercase(),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = CupertinoColors.secondaryLabel,
+                    letterSpacing = 0.4.sp
+                )
+                Text(
+                    text = "+ 添加规则",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = CupertinoColors.brandPrimary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { showCustomRuleDialog = true }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
         }
 
         item {
@@ -465,6 +592,24 @@ fun AccelerationScreen(
                                             modifier = Modifier.padding(start = 10.dp, top = 2.dp)
                                         )
                                     }
+
+                                    if (rule.isCustom) {
+                                        Spacer(modifier = Modifier.height(10.dp))
+                                        Text(
+                                            text = "删除此自定义规则",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = CupertinoColors.systemRed,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .clickable {
+                                                    RuleManager.removeCustomRule(rule.id)
+                                                    expandedRuleId = null
+                                                    Toast.makeText(context, "已删除规则 ${rule.name}", Toast.LENGTH_SHORT).show()
+                                                }
+                                                .padding(vertical = 4.dp)
+                                        )
+                                    }
                                 }
                             }
 
@@ -571,6 +716,268 @@ fun AccelerationScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showUpstreamDialog = false }) {
+                    Text("取消", color = CupertinoColors.secondaryLabel)
+                }
+            }
+        )
+    }
+
+    if (showAppSplitDialog) {
+        var mode by remember { mutableStateOf(appSplitMode) }
+        var selectedSet by remember { mutableStateOf(selectedAppPackages) }
+        var appFilter by remember { mutableStateOf("") }
+        var installedApps by remember { mutableStateOf<List<InstalledAppEntry>>(emptyList()) }
+        var isLoadingApps by remember { mutableStateOf(true) }
+
+        LaunchedEffect(Unit) {
+            installedApps = withContext(Dispatchers.IO) {
+                val pm = context.packageManager
+                val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                pm.queryIntentActivities(intent, 0)
+                    .mapNotNull { ri ->
+                        val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+                        if (pkg == context.packageName) return@mapNotNull null
+                        val label = ri.loadLabel(pm).toString().ifBlank { pkg }
+                        InstalledAppEntry(pkg, label)
+                    }
+                    .distinctBy { it.packageName }
+                    .sortedWith(
+                        compareByDescending<InstalledAppEntry> { it.packageName in selectedSet }
+                            .thenBy { it.label.lowercase() }
+                    )
+            }
+            isLoadingApps = false
+        }
+
+        val visibleApps = remember(installedApps, appFilter) {
+            if (appFilter.isBlank()) installedApps
+            else installedApps.filter {
+                it.label.contains(appFilter, ignoreCase = true) ||
+                    it.packageName.contains(appFilter, ignoreCase = true)
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { showAppSplitDialog = false },
+            containerColor = CupertinoColors.secondarySystemGroupedBackground,
+            title = {
+                Text(
+                    text = "分应用智能分流",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = CupertinoColors.label
+                )
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        AppSplitMode.entries.forEach { m ->
+                            CupertinoFilterPill(
+                                text = m.displayName,
+                                isSelected = mode == m,
+                                onClick = { mode = m }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    if (mode == AppSplitMode.ALL_APPS) {
+                        Text(
+                            text = "当前为「全部应用」模式，所有应用访问加速域名时均会自动走 LenuLane 双路径分流；日常域名仍走物理网卡直连。",
+                            fontSize = 12.sp,
+                            color = CupertinoColors.secondaryLabel,
+                            lineHeight = 17.sp
+                        )
+                    } else {
+                        CupertinoSearchField(
+                            value = appFilter,
+                            onValueChange = { appFilter = it },
+                            placeholder = "搜索应用名称或包名..."
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        if (isLoadingApps) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    color = CupertinoColors.brandPrimary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 260.dp)
+                            ) {
+                                items(visibleApps, key = { it.packageName }) { app ->
+                                    val checked = app.packageName in selectedSet
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedSet = if (checked) {
+                                                    selectedSet - app.packageName
+                                                } else {
+                                                    selectedSet + app.packageName
+                                                }
+                                            }
+                                            .padding(vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Checkbox(
+                                            checked = checked,
+                                            onCheckedChange = { isChk ->
+                                                selectedSet = if (isChk) selectedSet + app.packageName else selectedSet - app.packageName
+                                            },
+                                            colors = CheckboxDefaults.colors(checkedColor = CupertinoColors.brandPrimary)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = app.label,
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = CupertinoColors.label
+                                            )
+                                            Text(
+                                                text = app.packageName,
+                                                fontSize = 10.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = CupertinoColors.tertiaryLabel
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        RuleManager.setAppSplitConfig(mode, selectedSet)
+                        showAppSplitDialog = false
+                        if (isVpnRunning) {
+                            onRestartVpn()
+                            Toast.makeText(context, "已保存分应用策略并重建隧道", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "已保存分应用策略", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Text("应用", color = CupertinoColors.brandPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAppSplitDialog = false }) {
+                    Text("取消", color = CupertinoColors.secondaryLabel)
+                }
+            }
+        )
+    }
+
+    if (showCustomRuleDialog) {
+        var ruleName by remember { mutableStateOf("") }
+        var domainText by remember { mutableStateOf("") }
+        var chosenCategory by remember { mutableStateOf(RuleCategory.TOOLS) }
+        var chosenStrategy by remember { mutableStateOf(AccelerationStrategy.DOH_TLS_FRAGMENT) }
+
+        AlertDialog(
+            onDismissRequest = { showCustomRuleDialog = false },
+            containerColor = CupertinoColors.secondarySystemGroupedBackground,
+            title = {
+                Text(
+                    text = "添加自定义加速规则",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = CupertinoColors.label
+                )
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(text = "规则名称", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    CupertinoSearchField(
+                        value = ruleName,
+                        onValueChange = { ruleName = it },
+                        placeholder = "例如: HuggingFace"
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(text = "匹配域名 (多个用逗号或空格分隔)", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    CupertinoSearchField(
+                        value = domainText,
+                        onValueChange = { domainText = it },
+                        placeholder = "例如: huggingface.co, *.hf.co"
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(text = "分类与转发策略", fontSize = 12.sp, color = CupertinoColors.secondaryLabel)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        RuleCategory.entries.filter { it != RuleCategory.ALL }.forEach { cat ->
+                            CupertinoFilterPill(
+                                text = cat.displayName,
+                                isSelected = chosenCategory == cat,
+                                onClick = { chosenCategory = cat }
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        AccelerationStrategy.entries
+                            .filter { it != AccelerationStrategy.REVERSE_PROXY_MIRROR }
+                            .forEach { strat ->
+                                CupertinoFilterPill(
+                                    text = strat.badgeText,
+                                    isSelected = chosenStrategy == strat,
+                                    onClick = { chosenStrategy = strat }
+                                )
+                            }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val added = RuleManager.addCustomRule(
+                            name = ruleName,
+                            domainInput = domainText,
+                            category = chosenCategory,
+                            strategy = chosenStrategy
+                        )
+                        if (added) {
+                            showCustomRuleDialog = false
+                            Toast.makeText(context, "已添加自定义规则", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "请填写名称和有效域名", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Text("保存", color = CupertinoColors.brandPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomRuleDialog = false }) {
                     Text("取消", color = CupertinoColors.secondaryLabel)
                 }
             }

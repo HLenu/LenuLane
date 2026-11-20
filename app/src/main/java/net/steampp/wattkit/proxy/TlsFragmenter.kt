@@ -3,12 +3,24 @@ package net.steampp.wattkit.proxy
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 
+enum class TlsDesyncMode(val displayName: String, val badge: String) {
+    ADAPTIVE("自适应分片 (推荐)", "自适应"),
+    TLS_RECORD_SPLIT("TLS 记录层分片", "记录分片"),
+    TCP_SEGMENT_SPLIT("TCP 载荷层分片", "TCP 分片");
+
+    companion object {
+        fun fromName(name: String?): TlsDesyncMode =
+            entries.firstOrNull { it.name == name } ?: ADAPTIVE
+    }
+}
+
 /**
- * RFC 5246 / RFC 8446 compliant TLS Record Fragmentation helper.
- * Splits an outbound TLS ClientHello record across 3 valid TLS Handshake records,
- * cutting squarely through the midpoint of the SNI hostname bytes so middlebox DPI cannot
- * extract the full SNI in one contiguous record while Akamai/Cloudflare/GitHub reassemble cleanly,
- * with light socket flush pacing so records are sent across separate TCP segments.
+ * Dual-mode ClientHello DPI desync helper inspired by Outline SDK / GoodbyeDPI:
+ * 1) TLS_RECORD_SPLIT: splits an outbound TLS ClientHello into 3 RFC-compliant TLS Handshake records
+ *    across the SNI hostname midpoint.
+ * 2) TCP_SEGMENT_SPLIT: keeps the TLS record header intact and flushes the raw ClientHello bytes
+ *    across separate TCP segments (initial 2 bytes, up to SNI midpoint, remainder) for strict servers
+ *    that reject multi-record ClientHello handshakes.
  */
 object TlsFragmenter {
     private const val TCP_SEGMENT_PACING_MS = 1L
@@ -69,11 +81,48 @@ object TlsFragmenter {
         return records
     }
 
+    /**
+     * Splits ClientHello raw bytes across TCP segments without modifying TLS record headers.
+     */
+    fun fragmentTcpSegments(data: ByteArray, length: Int): List<ByteArray> {
+        if (length <= 0 || length > data.size) return emptyList()
+        if (length <= 10) return listOf(data.copyOf(length))
+
+        val contentType = data[0].toInt() and 0xFF
+        val major = data[1].toInt() and 0xFF
+        if (contentType != 0x16 || major != 3) {
+            return listOf(data.copyOf(length))
+        }
+
+        val sniRange = SniSniffer.locateSniRange(data, length)
+        val segments = mutableListOf<ByteArray>()
+        if (sniRange != null && sniRange.first >= 7 && sniRange.last < length) {
+            val sniLen = sniRange.last - sniRange.first + 1
+            val sniSplit = if (sniLen >= 2) sniRange.first + (sniLen / 2) else sniRange.first
+            val firstCut = 2
+            segments += data.copyOfRange(0, firstCut)
+            if (sniSplit > firstCut) {
+                segments += data.copyOfRange(firstCut, sniSplit)
+            }
+            if (sniSplit < length) {
+                segments += data.copyOfRange(sniSplit.coerceAtLeast(firstCut), length)
+            }
+        } else {
+            val mid = (length / 2).coerceAtLeast(2)
+            segments += data.copyOfRange(0, mid)
+            if (mid < length) {
+                segments += data.copyOfRange(mid, length)
+            }
+        }
+        return segments
+    }
+
     fun writeFragmented(
         output: OutputStream,
         data: ByteArray,
         length: Int,
-        enableFragment: Boolean
+        enableFragment: Boolean,
+        mode: TlsDesyncMode = TlsDesyncMode.TLS_RECORD_SPLIT
     ) {
         if (length <= 0) return
         if (!enableFragment) {
@@ -81,7 +130,11 @@ object TlsFragmenter {
             output.flush()
             return
         }
-        val chunks = fragmentClientHello(data, length)
+        val chunks = when (mode) {
+            TlsDesyncMode.TCP_SEGMENT_SPLIT -> fragmentTcpSegments(data, length)
+            TlsDesyncMode.TLS_RECORD_SPLIT,
+            TlsDesyncMode.ADAPTIVE -> fragmentClientHello(data, length)
+        }
         val paceTcp = chunks.size > 1 && output !is ByteArrayOutputStream
         for (i in chunks.indices) {
             output.write(chunks[i])

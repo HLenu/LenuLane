@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.steampp.wattkit.MainActivity
 import net.steampp.wattkit.R
+import net.steampp.wattkit.proxy.AppSplitMode
 import net.steampp.wattkit.proxy.DoHResolver
 import net.steampp.wattkit.proxy.LocalProxyServer
 import net.steampp.wattkit.proxy.RoutingMode
@@ -69,6 +70,9 @@ class WattVpnService : VpnService() {
 
         private val _networkStatus = MutableStateFlow("未启动")
         val networkStatus = _networkStatus.asStateFlow()
+
+        private val _dnsCacheHits = MutableStateFlow(0L)
+        val dnsCacheHits = _dnsCacheHits.asStateFlow()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -172,6 +176,41 @@ class WattVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
         }
+
+        // Per-App Split Tunneling (rethink-app / Intra pattern)
+        val splitMode = RuleManager.appSplitMode.value
+        val selectedPkgs = RuleManager.selectedAppPackages.value.filter { it != packageName }
+        when (splitMode) {
+            AppSplitMode.ONLY_SELECTED -> {
+                if (selectedPkgs.isNotEmpty()) {
+                    for (pkg in selectedPkgs) {
+                        try {
+                            builder.addAllowedApplication(pkg)
+                        } catch (_: Exception) {}
+                    }
+                } else {
+                    try {
+                        builder.addDisallowedApplication(packageName)
+                    } catch (_: Exception) {}
+                }
+            }
+            AppSplitMode.BYPASS_SELECTED -> {
+                try {
+                    builder.addDisallowedApplication(packageName)
+                } catch (_: Exception) {}
+                for (pkg in selectedPkgs) {
+                    try {
+                        builder.addDisallowedApplication(pkg)
+                    } catch (_: Exception) {}
+                }
+            }
+            AppSplitMode.ALL_APPS -> {
+                try {
+                    builder.addDisallowedApplication(packageName)
+                } catch (_: Exception) {}
+            }
+        }
+
         return builder.establish()
     }
 
@@ -309,6 +348,7 @@ class WattVpnService : VpnService() {
             _rxSpeed.value = "0.0 KB/s"
             _txSpeed.value = "0.0 KB/s"
             _networkStatus.value = "未启动"
+            _dnsCacheHits.value = 0L
 
             unregisterNetworkCallbackLocked()
             DoHResolver.setVpnProtectCallbacks(null, null)
@@ -374,6 +414,7 @@ class WattVpnService : VpnService() {
 
                 _rxSpeed.value = formatSpeed(deltaRx)
                 _txSpeed.value = formatSpeed(deltaTx)
+                _dnsCacheHits.value = smartDnsEngine?.cacheHits?.get() ?: 0L
 
                 prevUidRx = currUidRx
                 prevUidTx = currUidTx

@@ -1,5 +1,6 @@
 package net.steampp.wattkit.proxy
 
+import java.io.ByteArrayOutputStream
 import org.junit.Test
 
 class TlsFragmenterTest {
@@ -50,6 +51,25 @@ class TlsFragmenterTest {
         val http = "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".toByteArray(Charsets.US_ASCII)
         val out = TlsFragmenter.fragmentClientHello(http, http.size)
         check(out.size == 1 && out[0].contentEquals(http))
+    }
+
+    @Test fun tcpSegmentSplitBreaksSniWithoutAlteringSingleTlsRecord() {
+        val host = "i.pximg.net"
+        val packet = buildClientHello(serverNameExtension(host))
+        val segments = TlsFragmenter.fragmentTcpSegments(packet, packet.size)
+
+        check(segments.size == 3) { "Expected 3 TCP payload segments, got ${segments.size}" }
+        for (seg in segments) {
+            val asAscii = String(seg, Charsets.ISO_8859_1)
+            check(!asAscii.contains(host)) { "Complete SNI leaked inside a single TCP segment" }
+        }
+
+        val concatenated = segments.flatMap { it.toList() }.toByteArray()
+        check(concatenated.contentEquals(packet)) { "TCP segment split modified original ClientHello bytes" }
+
+        val bos = ByteArrayOutputStream()
+        TlsFragmenter.writeFragmented(bos, packet, packet.size, true, TlsDesyncMode.TCP_SEGMENT_SPLIT)
+        check(bos.toByteArray().contentEquals(packet))
     }
 
     private fun serverNameExtension(host: String): ByteArray {

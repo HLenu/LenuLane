@@ -1,17 +1,24 @@
 package net.steampp.wattkit.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,6 +43,8 @@ fun SettingsScreen() {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var isPinging by remember { mutableStateOf(false) }
+    var isGeneratingHosts by remember { mutableStateOf(false) }
+    var generatedHostsText by remember { mutableStateOf<String?>(null) }
     var results by remember { mutableStateOf<List<DiagnosticResult>>(emptyList()) }
     var hostsResult by remember { mutableStateOf<HostsInspectionResult?>(null) }
     val recentConnections by TrafficTelemetry.recentConnections.collectAsState()
@@ -283,7 +292,7 @@ fun SettingsScreen() {
                     } else {
                         CupertinoColors.systemTeal
                     },
-                    showDivider = false,
+                    showDivider = true,
                     onClick = { scanHosts() },
                     trailingContent = {
                         Text(
@@ -294,6 +303,42 @@ fun SettingsScreen() {
                         )
                     }
                 )
+                CupertinoCell(
+                    title = "生成加速 Hosts 映射文本",
+                    subtitle = "通过防污染 DoH 批量解析已启用规则域名并导出 Hosts",
+                    icon = Icons.Default.Dns,
+                    iconBackgroundColor = CupertinoColors.brandPrimary,
+                    showDivider = false,
+                    onClick = {
+                        if (!isGeneratingHosts) {
+                            isGeneratingHosts = true
+                            coroutineScope.launch {
+                                val text = NetworkDiagnostics.generateAcceleratedHosts()
+                                isGeneratingHosts = false
+                                generatedHostsText = text
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("LenuLane Hosts", text))
+                                Toast.makeText(context, "加速 Hosts 已生成并复制到剪贴板", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        if (isGeneratingHosts) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = CupertinoColors.brandPrimary,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(
+                                text = "生成",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = CupertinoColors.brandPrimary
+                            )
+                        }
+                    }
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -302,17 +347,17 @@ fun SettingsScreen() {
         // Section 4: Architecture Specs
         item {
             CupertinoSection(
-                title = "LENULANE 双路径架构 (v1.2.2)",
-                footer = "纯 Kotlin 进程内包引擎，无原生 SO 崩溃风险且无需系统 Root/CA 证书，常规流量经直连轨旁路。"
+                title = "LENULANE 双路径架构 (v1.4.0)",
+                footer = "纯 Kotlin 进程内包引擎，支持 RFC 7323 512KB TCP 滑窗、主动 RTO 重传及分应用分流，无原生 SO 崩溃风险。"
             ) {
                 CupertinoCell(
                     title = "进程内 TUN 转发引擎",
-                    subtitle = "TunPacketEngine 纯 Kotlin IPv4/TCP/UDP/ICMP",
+                    subtitle = "TunPacketEngine RFC 7323 WSOPT · 主动 RTO 与僵尸回收",
                     icon = Icons.Default.Lan,
                     iconBackgroundColor = CupertinoColors.brandPrimary,
                     trailingContent = {
                         Text(
-                            text = "In-Process",
+                            text = "512KB Win",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium,
                             color = CupertinoColors.brandPrimary
@@ -320,8 +365,8 @@ fun SettingsScreen() {
                     }
                 )
                 CupertinoCell(
-                    title = "Fake-IP 双路径智能分流",
-                    subtitle = "10.0.0.1 虚拟 DNS + 198.18.0.0/15 加速轨网段",
+                    title = "Fake-IP 与 DNS TTL 缓存",
+                    subtitle = "10.0.0.1 虚拟 DNS + 198.18.0.0/15 + 512 项常规缓存",
                     icon = Icons.AutoMirrored.Filled.AltRoute,
                     iconBackgroundColor = CupertinoColors.brandSecondary,
                     trailingContent = {
@@ -333,8 +378,8 @@ fun SettingsScreen() {
                     }
                 )
                 CupertinoCell(
-                    title = "DoH + TLS SNI 记录分片",
-                    subtitle = "抗污染 DoH 解析与 RFC 5246/8446 握手切片",
+                    title = "自适应 TLS 分片与节点优选",
+                    subtitle = "记录层/TCP 层自适应抗阻断与候选 IP EWMA 延迟排序",
                     icon = Icons.Default.Security,
                     iconBackgroundColor = Color(0xFF6B8AC4),
                     trailingContent = {
@@ -347,7 +392,7 @@ fun SettingsScreen() {
                 )
                 CupertinoCell(
                     title = "Steam Guard 隔离存储",
-                    subtitle = "Android Keystore AES-256-GCM + 独立校时",
+                    subtitle = "Keystore AES-256-GCM · otpauth:// · 交易确认 Hash",
                     icon = Icons.Default.VpnKey,
                     iconBackgroundColor = CupertinoColors.systemOrange,
                     showDivider = false,
@@ -399,7 +444,7 @@ fun SettingsScreen() {
                     iconBackgroundColor = CupertinoColors.systemGray2,
                     trailingContent = {
                         Text(
-                            text = "v1.2.2 (2026.11)",
+                            text = "v1.4.0 (2026.11)",
                             fontSize = 13.sp,
                             color = CupertinoColors.secondaryLabel
                         )
@@ -424,5 +469,40 @@ fun SettingsScreen() {
         item {
             Spacer(modifier = Modifier.height(120.dp))
         }
+    }
+
+    generatedHostsText?.let { hostsText ->
+        AlertDialog(
+            onDismissRequest = { generatedHostsText = null },
+            containerColor = CupertinoColors.secondarySystemGroupedBackground,
+            title = {
+                Text(
+                    text = "加速 Hosts 映射 (已复制)",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = CupertinoColors.label
+                )
+            },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 280.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = hostsText,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = CupertinoColors.label
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { generatedHostsText = null }) {
+                    Text("关闭", color = CupertinoColors.brandPrimary, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
     }
 }

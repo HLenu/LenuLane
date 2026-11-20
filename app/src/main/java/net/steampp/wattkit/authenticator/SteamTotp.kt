@@ -2,21 +2,23 @@ package net.steampp.wattkit.authenticator
 
 import android.content.Context
 import android.content.SharedPreferences
-import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.steampp.wattkit.proxy.NetworkDiagnostics
 import okhttp3.FormBody
+import java.io.ByteArrayOutputStream
+import java.net.URI
+import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.util.regex.Pattern
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Decoupled Steam Guard RFC-6238 TOTP generator and Valve time synchronizer.
- * Persists calibrated clock offset independently of VPN state so tokens remain
- * accurate offline or when the VPN engine is stopped/restarting.
+ * Decoupled Steam Guard RFC-6238 TOTP generator, otpauth:// URI parser,
+ * Valve mobile confirmation hash generator, and time synchronizer.
+ * Pure-Kotlin Base32/Base64 codecs keep cryptographic methods JVM-testable on API 24+.
  */
 object SteamTotp {
     private const val TAG = "SteamTotp"
@@ -29,6 +31,8 @@ object SteamTotp {
         'B', 'C', 'D', 'F', 'G', 'H', 'J', 'K',
         'M', 'N', 'P', 'Q', 'R', 'T', 'V', 'W', 'X', 'Y'
     )
+
+    private const val BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
     private var prefs: SharedPreferences? = null
 
@@ -49,28 +53,86 @@ object SteamTotp {
 
     fun hasClockCalibration(): Boolean = lastSyncEpochSeconds > 0L
 
+    fun currentSyncedTimeSeconds(): Long = (System.currentTimeMillis() / 1000L) + serverTimeOffset
+
     fun getRemainingSeconds(): Int {
-        val currentTime = (System.currentTimeMillis() / 1000L) + serverTimeOffset
+        val currentTime = currentSyncedTimeSeconds()
         return (30 - (currentTime % 30)).toInt()
     }
 
     fun getProgress(): Float = getRemainingSeconds() / 30f
 
     fun isValidBase64Secret(secret: String): Boolean {
-        val trimmed = secret.trim()
-        if (trimmed.isEmpty()) return false
+        val bytes = decodeBase64(secret) ?: return false
+        return bytes.size >= 10
+    }
+
+    /**
+     * Parses `otpauth://totp/Issuer:AccountName?secret=BASE32&issuer=...` (and `otpauth://steam/...`)
+     * into a SteamAccount whose `sharedSecret` is normalized Base64 bytes.
+     */
+    fun parseOtpAuthUri(uriString: String): SteamAccount? {
+        val trimmed = uriString.trim()
+        if (!trimmed.startsWith("otpauth://", ignoreCase = true)) return null
         return try {
-            val bytes = Base64.decode(trimmed, Base64.DEFAULT)
-            bytes.size >= 10
+            val uri = URI(trimmed)
+            val rawQuery = uri.rawQuery ?: return null
+            val params = mutableMapOf<String, String>()
+            for (pair in rawQuery.split('&')) {
+                val eq = pair.indexOf('=')
+                if (eq > 0) {
+                    val k = URLDecoder.decode(pair.substring(0, eq), "UTF-8").lowercase()
+                    val v = URLDecoder.decode(pair.substring(eq + 1), "UTF-8")
+                    params[k] = v
+                }
+            }
+            val rawSecret = params["secret"]?.trim() ?: return null
+            val rawBytes = decodeBase32(rawSecret)
+                ?: decodeBase64(rawSecret)
+                ?: return null
+            if (rawBytes.size < 10) return null
+
+            val encodedBase64 = encodeBase64(rawBytes)
+            val rawPath = (uri.rawPath ?: "").trimStart('/')
+            val decodedLabel = URLDecoder.decode(rawPath, "UTF-8").trim()
+            val labelAccount = decodedLabel.substringAfter(':', decodedLabel).trim()
+                .ifEmpty { params["issuer"]?.trim() ?: "Steam Guard" }
+
+            SteamAccount(
+                id = "otp_${System.currentTimeMillis()}",
+                accountName = labelAccount,
+                sharedSecret = encodedBase64
+            )
         } catch (_: Exception) {
-            false
+            null
         }
     }
 
     /**
-     * Synchronize time offset with Valve official TwoFactor query time API using
-     * WattKit's DoH + TLS-fragmented pipeline (independent of VPN toggle state).
+     * Generates a Valve trade/market confirmation hash (`Base64(HMAC-SHA1(identity_secret, be64(time) || tag))`),
+     * matching Valve Mobile Authenticator / steamguard-cli protocol.
      */
+    fun generateConfirmationHash(
+        identitySecretBase64: String,
+        timeSeconds: Long = currentSyncedTimeSeconds(),
+        tag: String = "conf"
+    ): String? {
+        val secretBytes = decodeBase64(identitySecretBase64) ?: return null
+        if (secretBytes.isEmpty()) return null
+        return try {
+            val tagBytes = tag.toByteArray(Charsets.US_ASCII)
+            val payload = ByteArray(8 + tagBytes.size)
+            ByteBuffer.wrap(payload, 0, 8).putLong(timeSeconds)
+            System.arraycopy(tagBytes, 0, payload, 8, tagBytes.size)
+            val mac = Mac.getInstance("HmacSHA1").apply {
+                init(SecretKeySpec(secretBytes, "HmacSHA1"))
+            }
+            encodeBase64(mac.doFinal(payload))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun syncServerTime(): Boolean = withContext(Dispatchers.IO) {
         val formBody = FormBody.Builder()
             .add("steamid", "0")
@@ -108,11 +170,7 @@ object SteamTotp {
      * Generates a 5-character Steam Guard code from a base64-encoded shared_secret.
      */
     fun generateSteamGuardCode(sharedSecretBase64: String, timeOffset: Long = serverTimeOffset): String {
-        val secretBytes = try {
-            Base64.decode(sharedSecretBase64.trim(), Base64.DEFAULT)
-        } catch (_: Exception) {
-            return "ERROR"
-        }
+        val secretBytes = decodeBase64(sharedSecretBase64) ?: return "ERROR"
         if (secretBytes.isEmpty()) return "ERROR"
 
         val currentTimeSeconds = (System.currentTimeMillis() / 1000L) + timeOffset
@@ -146,5 +204,72 @@ object SteamTotp {
         }
 
         return String(codeChars)
+    }
+
+    internal fun decodeBase32(input: String): ByteArray? {
+        val clean = input.uppercase().replace("=", "").replace(" ", "").replace("-", "")
+        if (clean.isEmpty()) return null
+        val out = ByteArrayOutputStream()
+        var buffer = 0
+        var bitsLeft = 0
+        for (ch in clean) {
+            val val5 = when (ch) {
+                in 'A'..'Z' -> ch - 'A'
+                in '2'..'7' -> (ch - '2') + 26
+                else -> return null
+            }
+            buffer = (buffer shl 5) or val5
+            bitsLeft += 5
+            if (bitsLeft >= 8) {
+                bitsLeft -= 8
+                out.write((buffer ushr bitsLeft) and 0xFF)
+            }
+        }
+        return out.toByteArray()
+    }
+
+    internal fun decodeBase64(input: String): ByteArray? {
+        val clean = input.trim().filterNot { it.isWhitespace() }
+        if (clean.isEmpty()) return null
+        val out = ByteArrayOutputStream()
+        var acc = 0
+        var bits = 0
+        for (ch in clean) {
+            if (ch == '=') break
+            val v = when (ch) {
+                in 'A'..'Z' -> ch - 'A'
+                in 'a'..'z' -> (ch - 'a') + 26
+                in '0'..'9' -> (ch - '0') + 52
+                '+', '-' -> 62
+                '/', '_' -> 63
+                else -> return null
+            }
+            acc = (acc shl 6) or v
+            bits += 6
+            if (bits >= 8) {
+                bits -= 8
+                out.write((acc ushr bits) and 0xFF)
+            }
+        }
+        return out.toByteArray()
+    }
+
+    internal fun encodeBase64(bytes: ByteArray): String {
+        val sb = StringBuilder(((bytes.size + 2) / 3) * 4)
+        var i = 0
+        while (i < bytes.size) {
+            val b0 = bytes[i].toInt() and 0xFF
+            val has1 = i + 1 < bytes.size
+            val has2 = i + 2 < bytes.size
+            val b1 = if (has1) bytes[i + 1].toInt() and 0xFF else 0
+            val b2 = if (has2) bytes[i + 2].toInt() and 0xFF else 0
+            val triple = (b0 shl 16) or (b1 shl 8) or b2
+            sb.append(BASE64_ALPHABET[(triple ushr 18) and 0x3F])
+            sb.append(BASE64_ALPHABET[(triple ushr 12) and 0x3F])
+            sb.append(if (has1) BASE64_ALPHABET[(triple ushr 6) and 0x3F] else '=')
+            sb.append(if (has2) BASE64_ALPHABET[triple and 0x3F] else '=')
+            i += 3
+        }
+        return sb.toString()
     }
 }

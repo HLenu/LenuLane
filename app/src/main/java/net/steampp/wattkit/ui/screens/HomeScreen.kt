@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import net.steampp.wattkit.R
+import net.steampp.wattkit.proxy.AppSplitMode
 import net.steampp.wattkit.proxy.RoutingMode
 import net.steampp.wattkit.proxy.RuleManager
 import net.steampp.wattkit.proxy.TrafficTelemetry
@@ -49,14 +50,22 @@ fun HomeScreen(
     val liveUploadSpeed by WattVpnService.txSpeed.collectAsState()
     val vpnStartTime by WattVpnService.startTime.collectAsState()
     val networkStatus by WattVpnService.networkStatus.collectAsState()
+    val dnsCacheHits by WattVpnService.dnsCacheHits.collectAsState()
 
     val routingMode by RuleManager.routingMode.collectAsState()
     val dohProvider by RuleManager.dohProvider.collectAsState()
+    val appSplitMode by RuleManager.appSplitMode.collectAsState()
+    val selectedAppPackages by RuleManager.selectedAppPackages.collectAsState()
     val totalHits by TrafficTelemetry.totalHits.collectAsState()
     val activeConns by TrafficTelemetry.activeConnectionCount.collectAsState()
     val recentConnections by TrafficTelemetry.recentConnections.collectAsState()
     val enabledRuleCount = RuleManager.getEnabledCount()
     val totalRuleCount = RuleManager.allRules.size
+    val appScopeLabel = when (appSplitMode) {
+        AppSplitMode.ALL_APPS -> "全部应用"
+        AppSplitMode.ONLY_SELECTED -> "白名单 ${selectedAppPackages.size} 应用"
+        AppSplitMode.BYPASS_SELECTED -> "绕过 ${selectedAppPackages.size} 应用"
+    }
 
     var elapsedSeconds by remember { mutableLongStateOf(0L) }
     LaunchedEffect(isVpnRunning, vpnStartTime) {
@@ -199,9 +208,9 @@ fun HomeScreen(
 
                     Text(
                         text = if (isVpnRunning) {
-                            "活跃规则 $enabledRuleCount/$totalRuleCount · 累计命中 $totalHits 次 · 当前活跃连接 $activeConns"
+                            "活跃规则 $enabledRuleCount/$totalRuleCount · 规则命中 $totalHits · DNS 缓存命中 $dnsCacheHits · 活跃连接 $activeConns"
                         } else {
-                            "进程内 Fake-IP 智能分流与 TLS SNI 分片，加速域名走优化通道，常规流量零损耗直连"
+                            "进程内 RFC 7323 Fake-IP 双路径分流与自适应 TLS 分片，常规流量零损耗直连"
                         },
                         fontSize = 13.sp,
                         color = CupertinoColors.secondaryLabel,
@@ -255,7 +264,7 @@ fun HomeScreen(
                                     )
                                     Spacer(modifier = Modifier.width(5.dp))
                                     Text(
-                                        text = "加速轨 · $enabledRuleCount 组规则",
+                                        text = "加速轨 · $enabledRuleCount 组 · ${dohProvider.displayName.substringBefore(" ")}",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Medium,
                                         color = CupertinoColors.brandOnContainer
@@ -270,7 +279,7 @@ fun HomeScreen(
                                     )
                                     Spacer(modifier = Modifier.width(5.dp))
                                     Text(
-                                        text = if (routingMode == RoutingMode.SMART_SPLIT) "直连轨 · 物理网卡" else "全局隧道模式",
+                                        text = if (routingMode == RoutingMode.SMART_SPLIT) "直连轨 · $appScopeLabel" else "全局隧道 · $appScopeLabel",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Medium,
                                         color = CupertinoColors.secondaryLabel

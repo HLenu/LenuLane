@@ -105,22 +105,35 @@ object ProxyConnectionDispatcher {
                         if (candidates.isEmpty()) throw IOException("DoH resolve failed for $hostDomain")
 
                         useTlsFragment = isTlsClientHello && RuleManager.tlsFragmentEnabled.value
-                        val attempts = candidates.take(2)
+                        val configuredDesyncMode = RuleManager.tlsDesyncMode.value
+                        val attempts = candidates.take(3)
                         var connectedSock: Socket? = null
                         var lastErr: Exception? = null
 
                         for (idx in attempts.indices) {
                             val candIp = attempts[idx]
                             val attemptSock = newProtectedSocket()
+                            val desyncModeForAttempt = when (configuredDesyncMode) {
+                                TlsDesyncMode.ADAPTIVE ->
+                                    if (idx == 0) TlsDesyncMode.TLS_RECORD_SPLIT else TlsDesyncMode.TCP_SEGMENT_SPLIT
+                                else -> configuredDesyncMode
+                            }
                             try {
-                                attemptSock.connect(InetSocketAddress(candIp, targetPort), 6000)
+                                val t0 = System.currentTimeMillis()
+                                attemptSock.connect(InetSocketAddress(candIp, targetPort), 2500)
                                 if (initialBuffer != null && bytesRead > 0) {
                                     val tOut = attemptSock.getOutputStream()
-                                    TlsFragmenter.writeFragmented(tOut, initialBuffer, bytesRead, useTlsFragment)
+                                    TlsFragmenter.writeFragmented(
+                                        output = tOut,
+                                        data = initialBuffer,
+                                        length = bytesRead,
+                                        enableFragment = useTlsFragment,
+                                        mode = desyncModeForAttempt
+                                    )
                                     initialWrittenUpstream = true
                                 }
                                 if (useTlsFragment && initialWrittenUpstream) {
-                                    // Verify ServerHello arrives cleanly; if DPI resets/closes candidate #1, fail over to #2.
+                                    // Verify ServerHello arrives cleanly; if DPI resets/closes candidate #1, fail over & adapt mode.
                                     val probeBuf = ByteArray(16384)
                                     val n = attemptSock.getInputStream().read(probeBuf)
                                     if (n <= 0) {
@@ -129,6 +142,8 @@ object ProxyConnectionDispatcher {
                                     preReadDownBuf = probeBuf
                                     preReadDownLen = n
                                 }
+                                val rttMs = System.currentTimeMillis() - t0
+                                DoHResolver.recordIpSuccess(hostDomain, candIp, rttMs)
                                 connectedSock = attemptSock
                                 resolvedIp = candIp
                                 break

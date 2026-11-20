@@ -4,7 +4,11 @@ import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.steampp.wattkit.vpn.DnsPacketCodec
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -31,6 +35,7 @@ enum class DoHProvider(
 ) {
     ALIDNS("alidns", "阿里 DoH (223.5.5.5)", "https://223.5.5.5/resolve", "223.5.5.5", false),
     DNSPOD("dnspod", "腾讯 DoH (1.12.12.12)", "https://1.12.12.12/resolve", "119.29.29.29", false),
+    QIHOO360("360doh", "360 DoH (101.226.4.6)", "https://101.226.4.6/resolve", "101.226.4.6", false),
     CLOUDFLARE("cloudflare", "Cloudflare DoH (1.1.1.1)", "https://1.1.1.1/dns-query", "1.1.1.1", true);
 
     companion object {
@@ -116,6 +121,7 @@ object DoHResolver {
 
     private val cache = ConcurrentHashMap<String, CachedEntry>()
     private val inFlightLocks = ConcurrentHashMap<String, Any>()
+    private val ipScores = ConcurrentHashMap<String, Long>()
     private val prefetchScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     @Volatile
@@ -194,8 +200,31 @@ object DoHResolver {
 
     fun clearCache() {
         cache.clear()
+        ipScores.clear()
         cloudflareFallbackCooldownUntilMs = 0L
     }
+
+    /**
+     * Benchmarks every configured DoH endpoint concurrently against a reference domain.
+     * Returns latency in milliseconds (>= 0) or -1L if the endpoint failed/timed out.
+     */
+    suspend fun benchmarkAllProviders(probeDomain: String = "github.com"): Map<DoHProvider, Long> =
+        withContext(Dispatchers.IO) {
+            coroutineScope {
+                DoHProvider.entries.map { provider ->
+                    async {
+                        val t0 = System.currentTimeMillis()
+                        val res = queryProvider(provider, probeDomain)
+                        val elapsed = if (res != null && res.first.isNotEmpty()) {
+                            (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                        } else {
+                            -1L
+                        }
+                        provider to elapsed
+                    }
+                }.awaitAll().toMap()
+            }
+        }
 
     fun prefetch(hostname: String) {
         val key = hostname.lowercase().trimEnd('.')
@@ -252,7 +281,7 @@ object DoHResolver {
 
             // 2. Cross-provider DoH fallback (skip Cloudflare if recently timed out)
             if (discoveredIps.isEmpty()) {
-                val alternates = listOf(DoHProvider.DNSPOD, DoHProvider.ALIDNS, DoHProvider.CLOUDFLARE)
+                val alternates = listOf(DoHProvider.DNSPOD, DoHProvider.ALIDNS, DoHProvider.QIHOO360, DoHProvider.CLOUDFLARE)
                     .filter { it != provider }
                 for (alt in alternates) {
                     if (alt == DoHProvider.CLOUDFLARE && System.currentTimeMillis() < cloudflareFallbackCooldownUntilMs) {
@@ -284,16 +313,54 @@ object DoHResolver {
                 }
             }
 
-            // Only fall back to static CDN Edge pool when live DoH + protected UDP both returned nothing.
-            val mergedList = if (discoveredIps.isNotEmpty()) {
-                discoveredIps.distinct()
-            } else {
+            if (discoveredIps.isEmpty()) {
                 pickedSource = "CDN Edge 池"
-                edgePool.distinct()
             }
+            // Merge verified CDN Edge fallback IPs after live DoH IPs and sort by EWMA health score
+            val mergedList = mergeAndRankCandidates(clean, discoveredIps, edgePool)
             if (mergedList.isEmpty()) return emptyList()
             cacheResult(clean, mergedList, pickedSource, pickedTtl)
             return mergedList.map { ResolvedDnsResult(it, pickedSource, pickedTtl) }
+        }
+    }
+
+    internal fun mergeAndRankCandidates(
+        hostname: String,
+        discoveredIps: List<String>,
+        fallbackEdgePool: List<String>
+    ): List<String> {
+        val clean = hostname.lowercase().trim().trimEnd('.')
+        val combined = (discoveredIps + fallbackEdgePool).distinct()
+        if (combined.size <= 1) return combined
+        val indexed = combined.withIndex().toList()
+        return indexed.sortedWith { a, b ->
+            val sa = ipScores[scoreKey(clean, a.value)] ?: 5_000L
+            val sb = ipScores[scoreKey(clean, b.value)] ?: 5_000L
+            val cmp = sa.compareTo(sb)
+            if (cmp != 0) cmp else a.index.compareTo(b.index)
+        }.map { it.value }
+    }
+
+    /**
+     * Records a successful TCP + TLS handshake RTT so the lowest-latency healthy IP rises to #1.
+     */
+    fun recordIpSuccess(hostname: String, ip: String, rttMs: Long) {
+        val clean = hostname.lowercase().trim().trimEnd('.')
+        if (clean.isEmpty() || ip.isBlank()) return
+        val k = scoreKey(clean, ip)
+        val clamped = rttMs.coerceIn(1L, 10_000L)
+        val prev = ipScores[k]
+        val updated = if (prev == null || prev >= 50_000L) {
+            clamped
+        } else {
+            ((prev * 7L) + (clamped * 3L)) / 10L
+        }
+        ipScores[k] = updated
+        val domainLock = inFlightLocks.computeIfAbsent(clean) { Any() }
+        synchronized(domainLock) {
+            val cached = cache[clean] ?: return
+            if (cached.ips.size <= 1) return
+            cache[clean] = cached.copy(ips = mergeAndRankCandidates(clean, cached.ips, emptyList()))
         }
     }
 
@@ -304,6 +371,7 @@ object DoHResolver {
     fun markIpFailed(hostname: String, failedIp: String) {
         val clean = hostname.lowercase().trim().trimEnd('.')
         if (clean.isEmpty() || failedIp.isBlank()) return
+        ipScores[scoreKey(clean, failedIp)] = 60_000L
         val domainLock = inFlightLocks.computeIfAbsent(clean) { Any() }
         synchronized(domainLock) {
             val cached = cache[clean] ?: return
@@ -312,6 +380,8 @@ object DoHResolver {
             cache[clean] = cached.copy(ips = reordered)
         }
     }
+
+    private fun scoreKey(cleanHost: String, ip: String): String = "$cleanHost|$ip"
 
     private fun findFallbackIps(host: String): List<String>? {
         fallbackIps[host]?.let { return it }
@@ -341,7 +411,7 @@ object DoHResolver {
                     .url(provider.endpointUrl)
                     .post(wireQuery.toRequestBody(DNS_MESSAGE_MEDIA_TYPE))
                     .header("Accept", "application/dns-message")
-                    .header("User-Agent", "LenuLane/1.2.2")
+                    .header("User-Agent", "LenuLane/1.4.0")
                     .build()
                 dohHttpClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return null
@@ -364,7 +434,7 @@ object DoHResolver {
                     .url(url)
                     .get()
                     .header("Accept", "application/dns-json")
-                    .header("User-Agent", "LenuLane/1.2.2")
+                    .header("User-Agent", "LenuLane/1.4.0")
                     .build()
                 dohHttpClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return null

@@ -1,5 +1,6 @@
 package net.steampp.wattkit.vpn
 
+import net.steampp.wattkit.authenticator.SteamTotp
 import net.steampp.wattkit.proxy.DoHResolver
 import org.junit.Test
 
@@ -76,5 +77,64 @@ class DnsAndFakeIpTest {
         check(fallbackList != null && fallbackList.size >= 2)
         val discordList = DoHResolver.fallbackIps["discord.com"]
         check(discordList != null && discordList.size >= 3)
+    }
+
+    @Test fun dohCandidateMergeAndEwmaScoringReorderHealthyLowestLatencyFirst() {
+        DoHResolver.clearCache()
+        val host = "unit.test.example.org"
+        DoHResolver.recordIpSuccess(host, "1.2.3.4", 180L)
+        DoHResolver.recordIpSuccess(host, "5.6.7.8", 42L)
+        DoHResolver.markIpFailed(host, "9.9.9.9")
+
+        val ranked = DoHResolver.mergeAndRankCandidates(
+            hostname = host,
+            discoveredIps = listOf("9.9.9.9", "1.2.3.4"),
+            fallbackEdgePool = listOf("5.6.7.8", "1.2.3.4")
+        )
+        check(ranked == listOf("5.6.7.8", "1.2.3.4", "9.9.9.9")) { "Unexpected candidate order: $ranked" }
+        DoHResolver.clearCache()
+    }
+
+    @Test fun smartDnsWireCacheServesRepeatUnmatchedDomainWithPatchedTransactionId() {
+        val pool = FakeIpPool()
+        var upstreamCalls = 0
+        val realIp = DnsPacketCodec.ipStringToInt("220.181.38.148")!!
+
+        val engine = SmartDnsEngine(
+            fakeIpPool = pool,
+            protectUdp = { true },
+            upstreamForwarder = { q, len, _ ->
+                upstreamCalls++
+                val question = DnsPacketCodec.parseQuestion(q, len)!!
+                DnsPacketCodec.buildAResponse(q, len, question, realIp, ttlSeconds = 120)
+            }
+        )
+
+        val q1 = DnsPacketCodec.buildQuery("baidu.com", DnsPacketCodec.TYPE_A, 0x1111)
+        val r1 = engine.handleDnsQuery(q1, q1.size)!!
+        check(upstreamCalls == 1)
+        check(engine.cacheMisses.get() == 1L && engine.cacheHits.get() == 0L)
+        check(((r1[0].toInt() and 0xFF) shl 8 or (r1[1].toInt() and 0xFF)) == 0x1111)
+
+        val q2 = DnsPacketCodec.buildQuery("baidu.com", DnsPacketCodec.TYPE_A, 0x2222)
+        val r2 = engine.handleDnsQuery(q2, q2.size)!!
+        check(upstreamCalls == 1) { "Expected cached hit without extra upstream query" }
+        check(engine.cacheHits.get() == 1L)
+        check(((r2[0].toInt() and 0xFF) shl 8 or (r2[1].toInt() and 0xFF)) == 0x2222)
+        val extracted = DnsPacketCodec.extractARecords(r2, r2.size)
+        check(extracted.size == 1 && extracted[0].first == realIp)
+    }
+
+    @Test fun steamTotpOtpAuthUriParsingAndConfirmationHashWorkOnJvm() {
+        val uri = "otpauth://totp/Steam:TestPlayer?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Steam"
+        val acc = SteamTotp.parseOtpAuthUri(uri)
+        check(acc != null && acc.accountName == "TestPlayer")
+        check(SteamTotp.isValidBase64Secret(acc.sharedSecret))
+
+        val code = SteamTotp.generateSteamGuardCode(acc.sharedSecret)
+        check(code.length == 5 && code != "ERROR")
+
+        val confHash = SteamTotp.generateConfirmationHash(acc.sharedSecret, 1_700_000_000L, "conf")
+        check(!confHash.isNullOrBlank() && confHash.length == 28 && confHash.endsWith("="))
     }
 }

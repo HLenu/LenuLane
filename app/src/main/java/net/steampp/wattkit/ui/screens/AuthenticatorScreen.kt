@@ -11,8 +11,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -56,6 +58,7 @@ fun AuthenticatorScreen() {
     var selectedIndex by remember { mutableIntStateOf(0) }
     var showManualAddDialog by remember { mutableStateOf(false) }
     var showMaFileDialog by remember { mutableStateOf(false) }
+    var exportedBackupJson by remember { mutableStateOf<String?>(null) }
 
     var remainingSeconds by remember { mutableIntStateOf(SteamTotp.getRemainingSeconds()) }
     var progress by remember { mutableFloatStateOf(SteamTotp.getProgress()) }
@@ -469,6 +472,48 @@ fun AuthenticatorScreen() {
                                 )
                             }
                         }
+
+                        if (activeAccount.identitySecret.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFFF3F6FC),
+                                border = BorderStroke(0.5.dp, CupertinoColors.cardBorder),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val nowSec = SteamTotp.currentSyncedTimeSeconds()
+                                        val hash = SteamTotp.generateConfirmationHash(
+                                            activeAccount.identitySecret,
+                                            nowSec,
+                                            "conf"
+                                        )
+                                        if (!hash.isNullOrBlank()) {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            clipboard.setPrimaryClip(ClipData.newPlainText("Steam Conf Hash", "$nowSec:$hash"))
+                                            Toast.makeText(context, "已复制交易确认 Hash ($nowSec)", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "交易/市场确认 Hash (conf)",
+                                        fontSize = 12.sp,
+                                        color = CupertinoColors.secondaryLabel
+                                    )
+                                    Text(
+                                        text = "生成并复制",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = CupertinoColors.brandPrimary
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -536,8 +581,8 @@ fun AuthenticatorScreen() {
                 footer = "LenuLane 令牌遵循 Steam Guard RFC-6238 规范，经 Android Keystore AES-256-GCM 加密落盘，且时钟校准独立于加速开关运行。"
             ) {
                 CupertinoCell(
-                    title = "导入 .maFile 令牌文件",
-                    subtitle = "支持导入 Steam Desktop Authenticator 导出的 maFile",
+                    title = "导入 .maFile / otpauth:// / 备份",
+                    subtitle = "支持 maFile JSON、标准 otpauth://totp 链接或批量备份 JSON",
                     icon = Icons.Default.FileOpen,
                     iconBackgroundColor = CupertinoColors.systemTeal,
                     onClick = { showMaFileDialog = true }
@@ -554,9 +599,25 @@ fun AuthenticatorScreen() {
                     subtitle = "通过 DoH 独立同步服务器时间并持久化偏差",
                     icon = Icons.Default.Sync,
                     iconBackgroundColor = CupertinoColors.systemGreen,
-                    showDivider = false,
+                    showDivider = accounts.isNotEmpty(),
                     onClick = { syncTime() }
                 )
+                if (accounts.isNotEmpty()) {
+                    CupertinoCell(
+                        title = "导出账号备份 JSON",
+                        subtitle = "生成完整令牌 JSON 备份供迁移或离线留存",
+                        icon = Icons.Default.Download,
+                        iconBackgroundColor = CupertinoColors.brandPrimary,
+                        showDivider = false,
+                        onClick = {
+                            val json = storage.exportAccountsJson()
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("LenuLane Backup", json))
+                            exportedBackupJson = json
+                            Toast.makeText(context, "备份 JSON 已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
             }
         }
 
@@ -634,7 +695,7 @@ fun AuthenticatorScreen() {
         )
     }
 
-    // Dialog 2: Paste maFile JSON
+    // Dialog 2: Paste maFile JSON / otpauth URI / JSON Array Backup
     if (showMaFileDialog) {
         var inputJson by remember { mutableStateOf("") }
 
@@ -643,7 +704,7 @@ fun AuthenticatorScreen() {
             containerColor = CupertinoColors.secondarySystemGroupedBackground,
             title = {
                 Text(
-                    text = "导入 .maFile 令牌文本",
+                    text = "导入 .maFile / otpauth://",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                     color = CupertinoColors.label
@@ -652,7 +713,7 @@ fun AuthenticatorScreen() {
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "请粘贴 .maFile 文件中的 JSON 文本内容:",
+                        text = "请粘贴 .maFile JSON、otpauth://totp/... 链接或备份 JSON 数组:",
                         fontSize = 12.sp,
                         color = CupertinoColors.secondaryLabel
                     )
@@ -660,22 +721,21 @@ fun AuthenticatorScreen() {
                     CupertinoSearchField(
                         value = inputJson,
                         onValueChange = { inputJson = it },
-                        placeholder = "{\"shared_secret\":\"...\",\"account_name\":\"...\"}"
+                        placeholder = "{\"shared_secret\":\"...\"} 或 otpauth://totp/..."
                     )
                 }
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        val parsed = storage.parseMaFile(inputJson)
-                        if (parsed != null && SteamTotp.isValidBase64Secret(parsed.sharedSecret)) {
-                            storage.addAccount(parsed)
+                        val imported = storage.importFlexibleText(inputJson)
+                        if (imported > 0) {
                             accounts = storage.getAccounts()
-                            selectedIndex = accounts.indexOfFirst { it.id == parsed.id }.coerceAtLeast(0)
+                            selectedIndex = (accounts.size - 1).coerceAtLeast(0)
                             showMaFileDialog = false
-                            Toast.makeText(context, "已成功导入 ${parsed.accountName}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "已成功导入 $imported 个令牌账号", Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "JSON 解析失败或 shared_secret 无效", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "格式解析失败或 secret 无效", Toast.LENGTH_LONG).show()
                         }
                     }
                 ) {
@@ -685,6 +745,41 @@ fun AuthenticatorScreen() {
             dismissButton = {
                 TextButton(onClick = { showMaFileDialog = false }) {
                     Text("取消", color = CupertinoColors.secondaryLabel)
+                }
+            }
+        )
+    }
+
+    exportedBackupJson?.let { backupText ->
+        AlertDialog(
+            onDismissRequest = { exportedBackupJson = null },
+            containerColor = CupertinoColors.secondarySystemGroupedBackground,
+            title = {
+                Text(
+                    text = "账号备份 JSON (已复制)",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = CupertinoColors.label
+                )
+            },
+            text = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        text = backupText,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = CupertinoColors.label
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { exportedBackupJson = null }) {
+                    Text("关闭", color = CupertinoColors.brandPrimary, fontWeight = FontWeight.Bold)
                 }
             }
         )

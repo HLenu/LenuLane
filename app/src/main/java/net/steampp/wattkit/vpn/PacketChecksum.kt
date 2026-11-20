@@ -16,7 +16,40 @@ object PacketChecksum {
     const val TCP_PSH = 0x08
     const val TCP_ACK = 0x10
 
+    // MSS = 1360 bytes (0x0550)
+    val SYN_ACK_MSS_ONLY_OPTION = byteArrayOf(0x02, 0x04, 0x05, 0x50)
+
+    // MSS = 1360 + NOP + Window Scale shift=7 (128x scaling, padded cleanly to 8 bytes)
+    val SYN_ACK_MSS_WS_OPTION = byteArrayOf(0x02, 0x04, 0x05, 0x50, 0x01, 0x03, 0x03, 0x07)
+
     private val ipIdGenerator = AtomicInteger(1)
+
+    /**
+     * Parses RFC 7323 TCP Window Scale option (Kind = 3, Length = 3) from a TCP header.
+     * Returns null if not present, or the clamped shift count [0..14].
+     */
+    fun parseTcpWindowScale(pkt: ByteArray, tcpHeaderOffset: Int, tcpHeaderLen: Int): Int? {
+        if (tcpHeaderLen <= 20) return null
+        val end = (tcpHeaderOffset + tcpHeaderLen).coerceAtMost(pkt.size)
+        var i = tcpHeaderOffset + 20
+        while (i < end) {
+            val kind = pkt[i].toInt() and 0xFF
+            when (kind) {
+                0 -> return null // EOL
+                1 -> i += 1      // NOP
+                else -> {
+                    if (i + 1 >= end) return null
+                    val optLen = pkt[i + 1].toInt() and 0xFF
+                    if (optLen < 2 || i + optLen > end) return null
+                    if (kind == 3 && optLen == 3) {
+                        return (pkt[i + 2].toInt() and 0xFF).coerceIn(0, 14)
+                    }
+                    i += optLen
+                }
+            }
+        }
+        return null
+    }
 
     fun internetChecksum(
         data: ByteArray,

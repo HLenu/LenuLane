@@ -3,6 +3,7 @@ package net.steampp.wattkit.proxy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -228,7 +229,7 @@ object NetworkDiagnostics {
 
             val reqBuilder = Request.Builder()
                 .url(url)
-                .header("User-Agent", "LenuLane/1.2.2")
+                .header("User-Agent", "LenuLane/1.4.0")
             if (postBody != null) {
                 reqBuilder.post(postBody)
             } else {
@@ -365,6 +366,45 @@ object NetworkDiagnostics {
                 summary = "读取 Hosts 失败: ${e.message}"
             )
         }
+    }
+
+    /**
+     * Resolves enabled acceleration rule primary domains via active anti-pollution DoH
+     * and formats an exportable Hosts mapping block.
+     */
+    suspend fun generateAcceleratedHosts(): String = withContext(Dispatchers.IO) {
+        val enabledDomains = RuleManager.snapshotRules()
+            .filter { it.isEnabled }
+            .flatMap { it.domains }
+            .map { it.trim().lowercase().trimEnd('.') }
+            .filter { it.isNotEmpty() && !it.startsWith("*.") }
+            .distinct()
+            .take(36)
+
+        val entries = coroutineScope {
+            enabledDomains.map { domain ->
+                async {
+                    val res = DoHResolver.resolveWithSource(domain)
+                    domain to res?.ip
+                }
+            }.awaitAll()
+        }
+
+        val sb = StringBuilder()
+        sb.append("# LenuLane v1.4.0 Accelerated Hosts (DoH: ")
+            .append(DoHResolver.activeProvider.displayName)
+            .append(")\n")
+        var resolvedCount = 0
+        for ((domain, ip) in entries) {
+            if (!ip.isNullOrBlank()) {
+                sb.append(String.format("%-16s %s\n", ip, domain))
+                resolvedCount++
+            }
+        }
+        if (resolvedCount == 0) {
+            sb.append("# 暂无可用 DoH 解析结果，请检查物理网络连接。\n")
+        }
+        sb.toString()
     }
 
     private fun extractCn(dn: String?): String {

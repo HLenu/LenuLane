@@ -166,6 +166,56 @@ class AccountStorage private constructor(context: Context) {
         }
     }
 
+    @Synchronized
+    fun exportAccountsJson(): String {
+        val current = readAccounts()
+        val arr = JSONArray()
+        for (acc in current) {
+            arr.put(JSONObject().apply {
+                put("id", acc.id)
+                put("account_name", acc.accountName)
+                put("shared_secret", acc.sharedSecret)
+                put("identity_secret", acc.identitySecret)
+            })
+        }
+        return arr.toString(2)
+    }
+
+    @Synchronized
+    fun importFlexibleText(rawInput: String): Int {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty()) return 0
+
+        if (trimmed.startsWith("[")) {
+            val parsedList = parseAccounts(trimmed)
+                ?.filter { SteamTotp.isValidBase64Secret(it.sharedSecret) }
+                ?: emptyList()
+            for (acc in parsedList) {
+                addAccount(acc)
+            }
+            return parsedList.size
+        }
+
+        if (trimmed.startsWith("{")) {
+            val single = parseMaFile(trimmed)
+            if (single != null && SteamTotp.isValidBase64Secret(single.sharedSecret)) {
+                addAccount(single)
+                return 1
+            }
+            return 0
+        }
+
+        var count = 0
+        for (line in trimmed.lineSequence()) {
+            val otp = SteamTotp.parseOtpAuthUri(line)
+            if (otp != null) {
+                addAccount(otp)
+                count++
+            }
+        }
+        return count
+    }
+
     private fun readAccounts(): List<SteamAccount> {
         val list = mutableListOf<SteamAccount>()
 
