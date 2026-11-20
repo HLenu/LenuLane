@@ -24,20 +24,20 @@ android {
         // Release signing checks WATTKIT_* env vars first, then the local official
         // keystore so locally built APKs remain upgrade-compatible with v1.0.0.
         // In CI or external environments without either, release falls back to debug.
-        val envStore = System.getenv("WATTKIT_STORE_FILE")
-        val localOfficialStore = "C:/Users/Administrator/Documents/Watt-Toolkit-Keystore/repair-test.keystore"
-        if (envStore != null && file(envStore).exists()) {
+        val envStore = System.getenv("WATTKIT_STORE_FILE")?.let { java.io.File(it) }
+        val localOfficialStore = java.io.File("C:/Users/Administrator/Documents/Watt-Toolkit-Keystore/repair-test.keystore")
+        if (envStore != null && envStore.exists()) {
             create("release") {
-                storeFile = file(envStore)
+                storeFile = envStore
                 storePassword = System.getenv("WATTKIT_STORE_PASSWORD") ?: ""
                 keyAlias = System.getenv("WATTKIT_KEY_ALIAS") ?: ""
                 keyPassword = System.getenv("WATTKIT_KEY_PASSWORD") ?: ""
                 enableV1Signing = true
                 enableV2Signing = true
             }
-        } else if (file(localOfficialStore).exists()) {
+        } else if (localOfficialStore.exists()) {
             create("release") {
-                storeFile = file(localOfficialStore)
+                storeFile = localOfficialStore
                 storePassword = "android"
                 keyAlias = "androidrepair"
                 keyPassword = "android"
