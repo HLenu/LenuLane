@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -301,31 +302,31 @@ fun SettingsScreen() {
         // Section 4: Architecture Specs
         item {
             CupertinoSection(
-                title = "系统底层架构 (v1.2.1)",
-                footer = "纯 Kotlin 进程内包引擎替代旧版原生子进程架构，全端零原生 SO 崩溃风险且无需系统 Root/CA 证书。"
+                title = "LENULANE 双路径架构 (v1.2.2)",
+                footer = "纯 Kotlin 进程内包引擎，无原生 SO 崩溃风险且无需系统 Root/CA 证书，常规流量经直连轨旁路。"
             ) {
                 CupertinoCell(
                     title = "进程内 TUN 转发引擎",
                     subtitle = "TunPacketEngine 纯 Kotlin IPv4/TCP/UDP/ICMP",
                     icon = Icons.Default.Lan,
-                    iconBackgroundColor = CupertinoColors.systemGreen,
+                    iconBackgroundColor = CupertinoColors.brandPrimary,
                     trailingContent = {
                         Text(
                             text = "In-Process",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Medium,
-                            color = CupertinoColors.systemGreen
+                            color = CupertinoColors.brandPrimary
                         )
                     }
                 )
                 CupertinoCell(
-                    title = "Fake-IP 智能分流路由",
-                    subtitle = "10.0.0.1 虚拟 DNS + 198.18.0.0/15 规则网段",
+                    title = "Fake-IP 双路径智能分流",
+                    subtitle = "10.0.0.1 虚拟 DNS + 198.18.0.0/15 加速轨网段",
                     icon = Icons.AutoMirrored.Filled.AltRoute,
-                    iconBackgroundColor = CupertinoColors.systemTeal,
+                    iconBackgroundColor = CupertinoColors.brandSecondary,
                     trailingContent = {
                         Text(
-                            text = "RFC 2544",
+                            text = "Dual-Lane",
                             fontSize = 12.sp,
                             color = CupertinoColors.secondaryLabel
                         )
@@ -335,7 +336,7 @@ fun SettingsScreen() {
                     title = "DoH + TLS SNI 记录分片",
                     subtitle = "抗污染 DoH 解析与 RFC 5246/8446 握手切片",
                     icon = Icons.Default.Security,
-                    iconBackgroundColor = CupertinoColors.systemIndigo,
+                    iconBackgroundColor = Color(0xFF6B8AC4),
                     trailingContent = {
                         Text(
                             text = "严格 CA",
@@ -366,15 +367,39 @@ fun SettingsScreen() {
         // Section 5: About & License
         item {
             CupertinoSection(
-                title = "关于 WATT TOOLKIT"
+                title = "关于 LENULANE"
             ) {
+                CupertinoCell(
+                    title = "产品定位",
+                    icon = Icons.Default.Layers,
+                    iconBackgroundColor = CupertinoColors.brandPrimary,
+                    trailingContent = {
+                        Text(
+                            text = "轻量网络加速与工具箱",
+                            fontSize = 13.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                )
+                CupertinoCell(
+                    title = "设计标识",
+                    icon = Icons.AutoMirrored.Filled.AltRoute,
+                    iconBackgroundColor = CupertinoColors.brandSecondary,
+                    trailingContent = {
+                        Text(
+                            text = "双 L · 双路径智能分流",
+                            fontSize = 13.sp,
+                            color = CupertinoColors.secondaryLabel
+                        )
+                    }
+                )
                 CupertinoCell(
                     title = "应用版本",
                     icon = Icons.Default.Info,
                     iconBackgroundColor = CupertinoColors.systemGray2,
                     trailingContent = {
                         Text(
-                            text = "v1.2.1 (2026.11)",
+                            text = "v1.2.2 (2026.11)",
                             fontSize = 13.sp,
                             color = CupertinoColors.secondaryLabel
                         )

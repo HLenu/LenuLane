@@ -152,7 +152,7 @@ class WattVpnService : VpnService() {
 
     private fun configureAndEstablishTun(mode: RoutingMode): ParcelFileDescriptor? {
         val builder = Builder()
-            .setSession("WattKit Acceleration")
+            .setSession("LenuLane")
             .addAddress("10.0.0.2", 24)
             .addDnsServer("10.0.0.1")
             .setMtu(1500)
@@ -416,9 +416,9 @@ class WattVpnService : VpnService() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("WattKit 加速引擎运行中")
+            .setContentTitle("LenuLane 双路径加速运行中")
             .setContentText("${mode.displayName} · 启用 ${RuleManager.getEnabledCount()} 条规则")
-            .setSmallIcon(R.drawable.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_lenulane)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()

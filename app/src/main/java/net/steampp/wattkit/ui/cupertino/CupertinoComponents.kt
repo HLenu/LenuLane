@@ -45,7 +45,7 @@ fun CupertinoSwitch(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    val trackColor = if (checked) CupertinoColors.systemGreen else CupertinoColors.systemGray4
+    val trackColor = if (checked) CupertinoColors.brandPrimary else CupertinoColors.systemGray4
     val thumbOffset by animateDpAsState(
         targetValue = if (checked) 22.dp else 2.dp,
         animationSpec = spring(
@@ -334,7 +334,7 @@ fun CupertinoFilterPill(
         modifier = modifier
             .clip(CircleShape)
             .background(
-                if (isSelected) CupertinoColors.label else CupertinoColors.tertiarySystemFill
+                if (isSelected) CupertinoColors.brandPrimary else CupertinoColors.tertiarySystemFill
             )
             .clickable { onClick() }
             .padding(horizontal = 14.dp, vertical = 7.dp),
@@ -344,7 +344,7 @@ fun CupertinoFilterPill(
             text = text,
             fontSize = 13.sp,
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (isSelected) CupertinoColors.systemBackground else CupertinoColors.secondaryLabel
+            color = if (isSelected) Color.White else CupertinoColors.secondaryLabel
         )
     }
 }

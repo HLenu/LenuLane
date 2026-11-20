@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">WattKit</string>
-    <string name="vpn_channel_name">WattKit VPN Service</string>
-    <string name="vpn_channel_desc">Active acceleration notification</string>
+    <string name="app_name">LenuLane</string>
+    <string name="vpn_channel_name">LenuLane 双路径分流服务</string>
+    <string name="vpn_channel_desc">维持 LenuLane 本地双路径智能分流与加速隧道后台运行</string>
 </resources>

@@ -341,7 +341,7 @@ object DoHResolver {
                     .url(provider.endpointUrl)
                     .post(wireQuery.toRequestBody(DNS_MESSAGE_MEDIA_TYPE))
                     .header("Accept", "application/dns-message")
-                    .header("User-Agent", "WattKit/1.2.1")
+                    .header("User-Agent", "LenuLane/1.2.2")
                     .build()
                 dohHttpClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return null
@@ -364,7 +364,7 @@ object DoHResolver {
                     .url(url)
                     .get()
                     .header("Accept", "application/dns-json")
-                    .header("User-Agent", "WattKit/1.2.1")
+                    .header("User-Agent", "LenuLane/1.2.2")
                     .build()
                 dohHttpClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return null

@@ -147,7 +147,7 @@ fun AuthenticatorScreen() {
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = CupertinoColors.secondarySystemGroupedBackground,
-                    border = BorderStroke(0.5.dp, Color(0x1F000000)),
+                    border = BorderStroke(0.5.dp, CupertinoColors.cardBorder),
                     shadowElevation = 2.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -164,8 +164,8 @@ fun AuthenticatorScreen() {
                             Box(
                                 modifier = Modifier
                                     .clip(CircleShape)
-                                    .background(Color(0xFFF2F2F7))
-                                    .border(0.5.dp, Color(0x1A000000), CircleShape)
+                                    .background(CupertinoColors.systemGroupedBackground)
+                                    .border(0.5.dp, CupertinoColors.cardBorder, CircleShape)
                                     .clickable { syncTime() }
                                     .padding(horizontal = 10.dp, vertical = 5.dp)
                             ) {
@@ -228,7 +228,7 @@ fun AuthenticatorScreen() {
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
-                                color = CupertinoColors.systemBlue,
+                                color = CupertinoColors.brandPrimary,
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(44.dp)
@@ -245,8 +245,8 @@ fun AuthenticatorScreen() {
                             }
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
-                                color = Color(0xFFE8F5E9),
-                                border = BorderStroke(1.dp, Color(0xFFA7F3D0)),
+                                color = CupertinoColors.brandContainer,
+                                border = BorderStroke(1.dp, CupertinoColors.brandSecondary),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(44.dp)
@@ -257,7 +257,7 @@ fun AuthenticatorScreen() {
                                         text = "手动添加密钥",
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFF065F46)
+                                        color = CupertinoColors.brandOnContainer
                                     )
                                 }
                             }
@@ -296,7 +296,7 @@ fun AuthenticatorScreen() {
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = CupertinoColors.secondarySystemGroupedBackground,
-                    border = BorderStroke(0.5.dp, Color(0x1F000000)),
+                    border = BorderStroke(0.5.dp, CupertinoColors.cardBorder),
                     shadowElevation = 2.dp,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -346,8 +346,8 @@ fun AuthenticatorScreen() {
                             Box(
                                 modifier = Modifier
                                     .clip(CircleShape)
-                                    .background(Color(0xFFF2F2F7))
-                                    .border(0.5.dp, Color(0x1A000000), CircleShape)
+                                    .background(CupertinoColors.systemGroupedBackground)
+                                    .border(0.5.dp, CupertinoColors.cardBorder, CircleShape)
                                     .clickable { syncTime() }
                                     .padding(horizontal = 10.dp, vertical = 5.dp)
                             ) {
@@ -398,7 +398,7 @@ fun AuthenticatorScreen() {
                             targetValue = progress,
                             label = "totp_progress"
                         )
-                        val progressColor = if (remainingSeconds <= 5) CupertinoColors.systemRed else CupertinoColors.systemGreen
+                        val progressColor = if (remainingSeconds <= 5) CupertinoColors.systemRed else CupertinoColors.brandPrimary
 
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
@@ -426,7 +426,7 @@ fun AuthenticatorScreen() {
                                     .fillMaxWidth()
                                     .height(4.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFFE5E5EA))
+                                    .background(CupertinoColors.systemGray5)
                             ) {
                                 Box(
                                     modifier = Modifier
@@ -442,8 +442,8 @@ fun AuthenticatorScreen() {
 
                         Surface(
                             shape = RoundedCornerShape(16.dp),
-                            color = Color(0xFFE8F5E9),
-                            border = BorderStroke(1.dp, Color(0xFFA7F3D0)),
+                            color = CupertinoColors.brandContainer,
+                            border = BorderStroke(1.dp, CupertinoColors.brandSecondary),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(48.dp)
@@ -457,7 +457,7 @@ fun AuthenticatorScreen() {
                                 Icon(
                                     imageVector = Icons.Default.ContentCopy,
                                     contentDescription = null,
-                                    tint = Color(0xFF065F46),
+                                    tint = CupertinoColors.brandOnContainer,
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
@@ -465,7 +465,7 @@ fun AuthenticatorScreen() {
                                     text = "点击复制动态验证码",
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF065F46)
+                                    color = CupertinoColors.brandOnContainer
                                 )
                             }
                         }
@@ -488,7 +488,7 @@ fun AuthenticatorScreen() {
                             title = acc.accountName,
                             subtitle = "ID: ${acc.id}",
                             icon = Icons.Default.AccountCircle,
-                            iconBackgroundColor = if (isSelected) CupertinoColors.systemGreen else CupertinoColors.systemGray3,
+                            iconBackgroundColor = if (isSelected) CupertinoColors.brandPrimary else CupertinoColors.systemGray3,
                             showDivider = index < accounts.size - 1,
                             trailingContent = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -496,7 +496,7 @@ fun AuthenticatorScreen() {
                                         Icon(
                                             imageVector = Icons.Default.Check,
                                             contentDescription = "当前选中",
-                                            tint = CupertinoColors.systemGreen,
+                                            tint = CupertinoColors.brandPrimary,
                                             modifier = Modifier.size(20.dp)
                                         )
                                     }
@@ -533,7 +533,7 @@ fun AuthenticatorScreen() {
         item {
             CupertinoSection(
                 title = "管理与导入",
-                footer = "WattKit 令牌完全遵循 Steam Guard RFC-6238 规范，经 Android Keystore AES-256-GCM 加密落盘，且时钟校准独立于加速开关运行。"
+                footer = "LenuLane 令牌遵循 Steam Guard RFC-6238 规范，经 Android Keystore AES-256-GCM 加密落盘，且时钟校准独立于加速开关运行。"
             ) {
                 CupertinoCell(
                     title = "导入 .maFile 令牌文件",
@@ -623,7 +623,7 @@ fun AuthenticatorScreen() {
                         }
                     }
                 ) {
-                    Text("添加", color = CupertinoColors.systemGreen, fontWeight = FontWeight.Bold)
+                    Text("添加", color = CupertinoColors.brandPrimary, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -679,7 +679,7 @@ fun AuthenticatorScreen() {
                         }
                     }
                 ) {
-                    Text("导入", color = CupertinoColors.systemTeal, fontWeight = FontWeight.Bold)
+                    Text("导入", color = CupertinoColors.brandPrimary, fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {

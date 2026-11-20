@@ -189,7 +189,7 @@ object NetworkDiagnostics {
                     try { remoteSock?.close() } catch (_: Exception) {}
                     try { clientSock?.close() } catch (_: Exception) {}
                 }
-            }, "WattKit-DiagBridge-$host").apply { start() }
+            }, "LenuLane-DiagBridge-$host").apply { start() }
 
             // Real kernel Socket redirected at TCP connect() to our fragmenting bridge,
             // preserving full Conscrypt / OkHttp strict certificate verification!
@@ -228,7 +228,7 @@ object NetworkDiagnostics {
 
             val reqBuilder = Request.Builder()
                 .url(url)
-                .header("User-Agent", "WattKit/1.2.1")
+                .header("User-Agent", "LenuLane/1.2.2")
             if (postBody != null) {
                 reqBuilder.post(postBody)
             } else {

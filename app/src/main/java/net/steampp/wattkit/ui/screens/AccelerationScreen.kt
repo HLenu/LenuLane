@@ -73,7 +73,7 @@ fun AccelerationScreen(
             Spacer(modifier = Modifier.height(12.dp))
             CupertinoPageHeader(
                 title = "网络加速",
-                subtitle = "进程内 Fake-IP 智能分流 · DoH 净网与 RFC TLS 分片"
+                subtitle = "双路径智能分流 (Fake-IP) · DoH 净网与 RFC TLS 分片"
             )
         }
 
@@ -84,14 +84,14 @@ fun AccelerationScreen(
                 footer = routingMode.subtitle
             ) {
                 CupertinoCell(
-                    title = "WattKit 进程内加速引擎",
+                    title = "LenuLane 双路径加速引擎",
                     subtitle = if (isVpnRunning) {
                         "运行中 · ${routingMode.displayName}"
                     } else {
-                        "未启动 · 授权 VPN 后建立本地分流隧道"
+                        "未启动 · 授权 VPN 后建立双路径智能分流"
                     },
                     icon = Icons.Default.Bolt,
-                    iconBackgroundColor = if (isVpnRunning) CupertinoColors.systemGreen else CupertinoColors.systemGray3,
+                    iconBackgroundColor = if (isVpnRunning) CupertinoColors.brandPrimary else CupertinoColors.systemGray3,
                     showDivider = false,
                     trailingContent = {
                         CupertinoSwitch(
@@ -586,13 +586,13 @@ private fun formatBytes(bytes: Long): String = when {
 
 private fun getRuleIconAndColor(category: RuleCategory): Pair<ImageVector, Color> {
     return when (category) {
-        RuleCategory.STEAM -> Pair(Icons.Default.SportsEsports, Color(0xFF00ADEE))
-        RuleCategory.PIXIV -> Pair(Icons.Default.Brush, Color(0xFFFF4081))
-        RuleCategory.GAMING -> Pair(Icons.Default.Gamepad, Color(0xFFBF5AF2))
-        RuleCategory.MODS -> Pair(Icons.Default.Extension, Color(0xFFFF9F0A))
-        RuleCategory.DEV -> Pair(Icons.Default.Code, Color(0xFF30D158))
-        RuleCategory.COMMUNITY -> Pair(Icons.Default.Forum, Color(0xFF5E5CE6))
-        RuleCategory.TOOLS -> Pair(Icons.Default.Build, Color(0xFF64D2FF))
-        RuleCategory.ALL -> Pair(Icons.Default.Language, Color(0xFF0A84FF))
+        RuleCategory.STEAM -> Pair(Icons.Default.SportsEsports, Color(0xFF53699A))
+        RuleCategory.PIXIV -> Pair(Icons.Default.Brush, Color(0xFF7B73BA))
+        RuleCategory.GAMING -> Pair(Icons.Default.Gamepad, Color(0xFF6B8AC4))
+        RuleCategory.MODS -> Pair(Icons.Default.Extension, Color(0xFF8AA8DC))
+        RuleCategory.DEV -> Pair(Icons.Default.Code, Color(0xFF4F7B8E))
+        RuleCategory.COMMUNITY -> Pair(Icons.Default.Forum, Color(0xFF5D6D9E))
+        RuleCategory.TOOLS -> Pair(Icons.Default.Build, Color(0xFF6383B8))
+        RuleCategory.ALL -> Pair(Icons.Default.Language, Color(0xFF53699A))
     }
 }

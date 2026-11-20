@@ -3,6 +3,7 @@ package net.steampp.wattkit.ui.screens
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,16 +24,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import net.steampp.wattkit.R
+import net.steampp.wattkit.proxy.RoutingMode
 import net.steampp.wattkit.proxy.RuleManager
 import net.steampp.wattkit.proxy.TrafficTelemetry
 import net.steampp.wattkit.ui.cupertino.CupertinoColors
-import net.steampp.wattkit.ui.cupertino.CupertinoPageHeader
 import net.steampp.wattkit.vpn.WattVpnService
 
 @Composable
@@ -82,15 +86,48 @@ fun HomeScreen(
             .padding(horizontal = 16.dp)
     ) {
         item {
-            Spacer(modifier = Modifier.height(8.dp))
-            CupertinoPageHeader(
-                title = "概览",
-                subtitle = if (isVpnRunning) {
-                    "${routingMode.displayName} · ${dohProvider.displayName}"
-                } else {
-                    "WattKit 游戏网络工具箱 v1.2.1"
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(0.5.dp, CupertinoColors.cardBorder),
+                    shadowElevation = 1.dp,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_lenulane_logo),
+                        contentDescription = "LenuLane",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
-            )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "LenuLane",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = CupertinoColors.label,
+                        letterSpacing = (-0.5).sp
+                    )
+                    Text(
+                        text = if (isVpnRunning) {
+                            "${routingMode.displayName} · ${dohProvider.displayName}"
+                        } else {
+                            "轻量网络加速与工具箱 · 双路径智能分流"
+                        },
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = CupertinoColors.secondaryLabel
+                    )
+                }
+            }
             Spacer(modifier = Modifier.height(10.dp))
         }
 
@@ -99,7 +136,7 @@ fun HomeScreen(
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = CupertinoColors.secondarySystemGroupedBackground,
-                border = BorderStroke(0.5.dp, Color(0x1F000000)),
+                border = BorderStroke(0.5.dp, CupertinoColors.cardBorder),
                 shadowElevation = 2.dp,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -118,7 +155,7 @@ fun HomeScreen(
                             modifier = Modifier
                                 .clip(CircleShape)
                                 .background(
-                                    if (isVpnRunning) Color(0xFFE8F5E9) else Color(0xFFF2F2F7)
+                                    if (isVpnRunning) CupertinoColors.brandContainer else CupertinoColors.systemGroupedBackground
                                 )
                                 .padding(horizontal = 10.dp, vertical = 5.dp)
                         ) {
@@ -127,15 +164,15 @@ fun HomeScreen(
                                     .size(7.dp)
                                     .clip(CircleShape)
                                     .background(
-                                        if (isVpnRunning) CupertinoColors.systemGreen else CupertinoColors.systemGray
+                                        if (isVpnRunning) CupertinoColors.brandPrimary else CupertinoColors.systemGray
                                     )
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (isVpnRunning) "加速隧道 · 运行中" else "加速隧道 · 未启动",
+                                text = if (isVpnRunning) "双路径隧道 · 运行中" else "双路径隧道 · 待命",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = if (isVpnRunning) Color(0xFF1B5E20) else CupertinoColors.secondaryLabel
+                                color = if (isVpnRunning) CupertinoColors.brandOnContainer else CupertinoColors.secondaryLabel
                             )
                         }
 
@@ -144,7 +181,7 @@ fun HomeScreen(
                                 text = networkStatus,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
-                                color = CupertinoColors.systemTeal
+                                color = CupertinoColors.brandPrimary
                             )
                         }
                     }
@@ -152,8 +189,8 @@ fun HomeScreen(
                     Spacer(modifier = Modifier.height(14.dp))
 
                     Text(
-                        text = if (isVpnRunning) "规则分流已接管" else "点击开启智能加速",
-                        fontSize = 25.sp,
+                        text = if (isVpnRunning) "双路径分流已就绪" else "开启双路径智能分流",
+                        fontSize = 24.sp,
                         fontWeight = FontWeight.Bold,
                         color = CupertinoColors.label
                     )
@@ -164,14 +201,86 @@ fun HomeScreen(
                         text = if (isVpnRunning) {
                             "活跃规则 $enabledRuleCount/$totalRuleCount · 累计命中 $totalHits 次 · 当前活跃连接 $activeConns"
                         } else {
-                            "采用进程内 Fake-IP 智能分流与 TLS SNI 记录分片，普通访问零损耗直连"
+                            "进程内 Fake-IP 智能分流与 TLS SNI 分片，加速域名走优化通道，常规流量零损耗直连"
                         },
                         fontSize = 13.sp,
                         color = CupertinoColors.secondaryLabel,
                         lineHeight = 18.sp
                     )
 
-                    Spacer(modifier = Modifier.height(18.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Dual-Lane Visual Status Strip
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFF3F6FC),
+                        border = BorderStroke(0.5.dp, CupertinoColors.cardBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .weight(if (routingMode == RoutingMode.SMART_SPLIT) 0.52f else 1f)
+                                        .height(5.dp)
+                                        .clip(CircleShape)
+                                        .background(CupertinoColors.brandPrimary)
+                                )
+                                if (routingMode == RoutingMode.SMART_SPLIT) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(0.48f)
+                                            .height(5.dp)
+                                            .clip(CircleShape)
+                                            .background(CupertinoColors.brandSecondary)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(7.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(CupertinoColors.brandPrimary)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "加速轨 · $enabledRuleCount 组规则",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = CupertinoColors.brandOnContainer
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(CupertinoColors.brandSecondary)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = if (routingMode == RoutingMode.SMART_SPLIT) "直连轨 · 物理网卡" else "全局隧道模式",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = CupertinoColors.secondaryLabel
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -183,7 +292,7 @@ fun HomeScreen(
                         TelemetryStatColumn("上传", if (isVpnRunning) liveUploadSpeed else "0 B/s")
                     }
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(18.dp))
 
                     val interactionSource = remember { MutableInteractionSource() }
                     val isPressed by interactionSource.collectIsPressedAsState()
@@ -195,8 +304,8 @@ fun HomeScreen(
 
                     Surface(
                         shape = RoundedCornerShape(16.dp),
-                        color = if (isVpnRunning) Color(0xFFE8F5E9) else CupertinoColors.systemBlue,
-                        border = if (isVpnRunning) BorderStroke(1.dp, Color(0xFFA7F3D0)) else null,
+                        color = if (isVpnRunning) CupertinoColors.brandContainer else CupertinoColors.brandPrimary,
+                        border = if (isVpnRunning) BorderStroke(1.dp, CupertinoColors.brandSecondary) else null,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(50.dp)
@@ -215,15 +324,15 @@ fun HomeScreen(
                             Icon(
                                 imageVector = Icons.Default.PowerSettingsNew,
                                 contentDescription = null,
-                                tint = if (isVpnRunning) Color(0xFF065F46) else Color.White,
+                                tint = if (isVpnRunning) CupertinoColors.brandOnContainer else Color.White,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (isVpnRunning) "停止加速服务" else "开启智能加速",
+                                text = if (isVpnRunning) "停止加速服务" else "开启双路径加速",
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isVpnRunning) Color(0xFF065F46) else Color.White
+                                color = if (isVpnRunning) CupertinoColors.brandOnContainer else Color.White
                             )
                         }
                     }
@@ -260,7 +369,7 @@ fun HomeScreen(
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = CupertinoColors.secondarySystemGroupedBackground,
-                border = BorderStroke(0.5.dp, Color(0x1F000000)),
+                border = BorderStroke(0.5.dp, CupertinoColors.cardBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 if (recentConnections.isEmpty()) {
@@ -362,7 +471,7 @@ fun HomeScreen(
                     title = "Steam 令牌",
                     subtitle = "独立运行 · 硬件加密",
                     icon = Icons.Default.Security,
-                    iconBgColor = CupertinoColors.systemTeal,
+                    iconBgColor = CupertinoColors.brandPrimary,
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigateToTab(2) }
                 )
@@ -371,7 +480,7 @@ fun HomeScreen(
                     title = "节点与规则",
                     subtitle = "$enabledRuleCount/$totalRuleCount 条 · ${routingMode.displayName.substringBefore(" ")}",
                     icon = Icons.Default.Bolt,
-                    iconBgColor = CupertinoColors.systemGreen,
+                    iconBgColor = CupertinoColors.brandSecondary,
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigateToTab(1) }
                 )
@@ -387,7 +496,7 @@ fun HomeScreen(
                     title = "链路诊断雷达",
                     subtitle = "DoH + 严格 TLS 验证",
                     icon = Icons.Default.WifiTethering,
-                    iconBgColor = CupertinoColors.systemIndigo,
+                    iconBgColor = Color(0xFF6B8AC4),
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigateToTab(3) }
                 )
@@ -396,7 +505,7 @@ fun HomeScreen(
                     title = "账号与密钥",
                     subtitle = "maFile 导入与校时",
                     icon = Icons.Default.People,
-                    iconBgColor = CupertinoColors.systemOrange,
+                    iconBgColor = Color(0xFF475C89),
                     modifier = Modifier.weight(1f),
                     onClick = { onNavigateToTab(2) }
                 )
@@ -449,7 +558,7 @@ fun ShortcutCard(
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = CupertinoColors.secondarySystemGroupedBackground,
-        border = BorderStroke(0.5.dp, Color(0x1F000000)),
+        border = BorderStroke(0.5.dp, CupertinoColors.cardBorder),
         shadowElevation = 1.dp,
         modifier = modifier
             .height(110.dp)

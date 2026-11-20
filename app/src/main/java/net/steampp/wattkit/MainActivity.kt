@@ -177,7 +177,7 @@ fun WattKitCupertinoApp() {
                 )
                 .liquidGlass(
                     shape = RoundedCornerShape(32.dp),
-                    backgroundColor = Color(0xF5FFFFFF), // Frosted white acrylic
+                    backgroundColor = CupertinoColors.liquidGlassBar,
                     showSpecularBorder = true
                 )
         ) {
@@ -235,8 +235,8 @@ private fun CupertinoDockTabItem(
         label = "tab_scale"
     )
 
-    val activeColor = CupertinoColors.systemGreen // Official iOS System Green
-    val inactiveColor = CupertinoColors.systemGray // Official iOS System Gray
+    val activeColor = CupertinoColors.brandPrimary
+    val inactiveColor = CupertinoColors.systemGray
 
     Column(
         modifier = Modifier
