@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -24,8 +26,8 @@ android {
         // Release signing checks WATTKIT_* env vars first, then the local official
         // keystore so locally built APKs remain upgrade-compatible with v1.0.0.
         // In CI or external environments without either, release falls back to debug.
-        val envStore = System.getenv("WATTKIT_STORE_FILE")?.let { java.io.File(it) }
-        val localOfficialStore = java.io.File("C:/Users/Administrator/Documents/Watt-Toolkit-Keystore/repair-test.keystore")
+        val envStore = System.getenv("WATTKIT_STORE_FILE")?.let { File(it) }
+        val localOfficialStore = File("C:/Users/Administrator/Documents/Watt-Toolkit-Keystore/repair-test.keystore")
         if (envStore != null && envStore.exists()) {
             create("release") {
                 storeFile = envStore
