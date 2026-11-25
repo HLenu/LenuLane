@@ -182,17 +182,14 @@ class WattVpnService : VpnService() {
         val selectedPkgs = RuleManager.selectedAppPackages.value.filter { it != packageName }
         when (splitMode) {
             AppSplitMode.ONLY_SELECTED -> {
-                if (selectedPkgs.isNotEmpty()) {
-                    for (pkg in selectedPkgs) {
-                        try {
-                            builder.addAllowedApplication(pkg)
-                        } catch (_: Exception) {}
-                    }
-                } else {
+                var allowed = 0
+                for (pkg in selectedPkgs) {
                     try {
-                        builder.addDisallowedApplication(packageName)
-                    } catch (_: Exception) {}
+                        builder.addAllowedApplication(pkg)
+                        allowed++
+                    } catch (_: android.content.pm.PackageManager.NameNotFoundException) {}
                 }
+                check(allowed > 0) { "Select at least one installed app for whitelist mode" }
             }
             AppSplitMode.BYPASS_SELECTED -> {
                 try {

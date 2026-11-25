@@ -28,9 +28,9 @@ object DnsPacketCodec {
         val txId = u16(packet, 0)
         val flags = u16(packet, 2)
         // Must be a standard query (QR == 0)
-        if ((flags and 0x8000) != 0) return null
+        if ((flags and 0xF800) != 0) return null
         val qdCount = u16(packet, 4)
-        if (qdCount < 1) return null
+        if (qdCount != 1) return null
 
         val nameResult = readName(packet, 12, length) ?: return null
         val qName = nameResult.first.lowercase().trimEnd('.')
@@ -47,6 +47,56 @@ object DnsPacketCodec {
             qClass = qClass,
             questionEndOffset = afterName + 4
         )
+    }
+
+    /** Match a UDP response to the original standard query before consuming it. */
+    fun matchesResponse(question: DnsQuestion, packet: ByteArray, length: Int = packet.size): Boolean {
+        if (length < 12 || length > packet.size) return false
+        val flags = u16(packet, 2)
+        if ((flags and 0x8000) == 0 || (flags and 0x7800) != (question.flags and 0x7800)) return false
+        if (u16(packet, 0) != question.transactionId || u16(packet, 4) != 1) return false
+        val (name, end) = readName(packet, 12, length) ?: return false
+        return end + 4 <= length && name.equals(question.qName, ignoreCase = true) &&
+            u16(packet, end) == question.qType && u16(packet, end + 2) == question.qClass
+    }
+
+    /** Positive, complete, non-EDNS responses only; age every real RR, including CNAMEs. */
+    internal fun cacheTtlOffsets(packet: ByteArray): List<Pair<Int, Long>>? {
+        if (packet.size < 12 || (u16(packet, 2) and 0x820F) != 0x8000 ||
+            u16(packet, 4) != 1 || u16(packet, 6) == 0) return null
+        var pos = (readName(packet, 12, packet.size)?.second ?: return null) + 4
+        if (pos > packet.size) return null
+        val records = u16(packet, 6) + u16(packet, 8) + u16(packet, 10)
+        val offsets = mutableListOf<Pair<Int, Long>>()
+        repeat(records) {
+            pos = readName(packet, pos, packet.size)?.second ?: return null
+            if (pos + 10 > packet.size) return null
+            val type = u16(packet, pos)
+            // OPT, TKEY and TSIG are not ordinary cacheable resource records.
+            if (type == 41 || type == 249 || type == 250) return null
+            val ttlOffset = pos + 4
+            val ttl = (0 until 4).fold(0L) { acc, i ->
+                (acc shl 8) or (packet[ttlOffset + i].toLong() and 0xFF)
+            }
+            if (ttl == 0L || ttl > Int.MAX_VALUE.toLong()) return null
+            offsets += ttlOffset to ttl
+            pos += 10 + u16(packet, pos + 8)
+            if (pos > packet.size) return null
+        }
+        return offsets.takeIf { pos == packet.size }
+    }
+
+    internal fun ageCachedResponse(
+        packet: ByteArray, offsets: List<Pair<Int, Long>>, elapsedSeconds: Long, transactionId: Int
+    ): ByteArray {
+        val copy = packet.copyOf()
+        copy[0] = (transactionId ushr 8).toByte()
+        copy[1] = transactionId.toByte()
+        for ((offset, original) in offsets) {
+            val ttl = (original - elapsedSeconds.coerceAtLeast(0L)).coerceAtLeast(0L)
+            repeat(4) { i -> copy[offset + i] = (ttl ushr ((3 - i) * 8)).toByte() }
+        }
+        return copy
     }
 
     fun buildQuery(domain: String, qType: Int = TYPE_A, transactionId: Int = 0x1234): ByteArray {
@@ -176,7 +226,7 @@ object DnsPacketCodec {
                     ((packet[cursor + 1].toInt() and 0xFF) shl 16) or
                     ((packet[cursor + 2].toInt() and 0xFF) shl 8) or
                     (packet[cursor + 3].toInt() and 0xFF)
-                results += ipInt to ttl.coerceIn(10, 3600)
+                results += ipInt to ttl.coerceIn(0, 3600)
             }
             cursor += rdLength
         }
