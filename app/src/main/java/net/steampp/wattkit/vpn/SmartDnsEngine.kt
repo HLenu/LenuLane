@@ -18,15 +18,15 @@ import java.util.concurrent.atomic.AtomicLong
 class SmartDnsEngine(
     private val fakeIpPool: FakeIpPool,
     private val protectUdp: (DatagramSocket) -> Boolean,
-    private val upstreamForwarder: ((ByteArray, Int, List<String>) -> ByteArray?)? = null
+    private val upstreamForwarder: ((ByteArray, Int, List<String>) -> ByteArray?)? = null,
+    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000L }
 ) {
     companion object {
         private const val MAX_DNS_CACHE_SIZE = 512
-        private const val DEFAULT_CACHE_TTL_SEC = 120
     }
 
-    private data class DnsCacheKey(val qType: Int, val qName: String)
-    private data class DnsCacheEntry(val wireResponse: ByteArray, val expiresAtMs: Long)
+    private data class DnsCacheKey(val qType: Int, val qName: String, val flags: Int)
+    private data class DnsCacheEntry(val wireResponse: ByteArray, val ttlOffsets: List<Pair<Int, Long>>, val storedAtMs: Long, val expiresAtMs: Long)
 
     private val cacheLock = Any()
     private val wireCache = object : LinkedHashMap<DnsCacheKey, DnsCacheEntry>(128, 0.75f, true) {
@@ -68,6 +68,7 @@ class SmartDnsEngine(
         for (f in deferredFakeDns) {
             if (f !in cleaned) cleaned += f
         }
+        if (upstreamServers != cleaned) clearCache()
         upstreamServers = cleaned
         if (lastGoodUpstream !in cleaned) {
             lastGoodUpstream = null
@@ -78,7 +79,7 @@ class SmartDnsEngine(
         val question = DnsPacketCodec.parseQuestion(queryBytes, length) ?: return null
         val matchedRule = RuleManager.findMatchingRule(question.qName)
 
-        if (matchedRule != null) {
+        if (matchedRule != null && question.qClass == DnsPacketCodec.CLASS_IN) {
             when (question.qType) {
                 DnsPacketCodec.TYPE_A -> {
                     TrafficTelemetry.recordDnsHit(matchedRule.id, question.qName)
@@ -105,19 +106,22 @@ class SmartDnsEngine(
         }
 
         // Unmatched everyday domain: check in-memory wire cache first (0ms latency)
-        val isCacheable = question.qType == DnsPacketCodec.TYPE_A || question.qType == DnsPacketCodec.TYPE_AAAA
-        val cacheKey = if (isCacheable) DnsCacheKey(question.qType, question.qName) else null
+        val isCacheable = question.qClass == DnsPacketCodec.CLASS_IN &&
+            (question.qType == DnsPacketCodec.TYPE_A || question.qType == DnsPacketCodec.TYPE_AAAA) &&
+            length == question.questionEndOffset &&
+            (6..11).all { queryBytes[it] == 0.toByte() }
+        val cacheKey = if (isCacheable) DnsCacheKey(question.qType, question.qName, question.flags) else null
         if (cacheKey != null) {
-            val now = System.currentTimeMillis()
+            val now = clockMs()
             val cached = synchronized(cacheLock) {
                 wireCache[cacheKey]?.takeIf { now < it.expiresAtMs }
             }
             if (cached != null) {
                 cacheHits.incrementAndGet()
-                val copy = cached.wireResponse.copyOf()
-                copy[0] = queryBytes[0]
-                copy[1] = queryBytes[1]
-                return copy
+                return DnsPacketCodec.ageCachedResponse(
+                    cached.wireResponse, cached.ttlOffsets, (now - cached.storedAtMs) / 1000L,
+                    question.transactionId
+                )
             }
             cacheMisses.incrementAndGet()
         }
@@ -127,20 +131,19 @@ class SmartDnsEngine(
             ?: forwardToUpstream(queryBytes, length, orderedServers)
             ?: return null
 
+        if (!DnsPacketCodec.matchesResponse(question, response)) return null
         val records = DnsPacketCodec.extractARecords(response, response.size)
         for ((ipInt, _) in records) {
             fakeIpPool.recordSnoopedIp(ipInt, question.qName)
         }
 
-        if (cacheKey != null && response.size >= 12) {
-            val rcode = response[3].toInt() and 0x0F
-            if (rcode == 0) {
-                val minTtl = records.minOfOrNull { it.second }?.coerceIn(30, 300) ?: DEFAULT_CACHE_TTL_SEC
+        if (cacheKey != null) {
+            val offsets = DnsPacketCodec.cacheTtlOffsets(response)
+            val minTtl = offsets?.minOfOrNull { it.second }?.coerceAtMost(300L)
+            if (offsets != null && minTtl != null) {
+                val now = clockMs()
                 synchronized(cacheLock) {
-                    wireCache[cacheKey] = DnsCacheEntry(
-                        wireResponse = response.copyOf(),
-                        expiresAtMs = System.currentTimeMillis() + minTtl * 1000L
-                    )
+                    wireCache[cacheKey] = DnsCacheEntry(response.copyOf(), offsets, now, now + minTtl * 1000L)
                 }
             }
         }
@@ -158,18 +161,20 @@ class SmartDnsEngine(
     }
 
     private fun forwardToUpstream(queryBytes: ByteArray, length: Int, ordered: List<String>): ByteArray? {
+        val question = DnsPacketCodec.parseQuestion(queryBytes, length) ?: return null
         for (dnsIp in ordered) {
             var socket: DatagramSocket? = null
             try {
                 socket = DatagramSocket()
-                protectUdp(socket)
+                if (!protectUdp(socket)) continue
                 socket.soTimeout = 550
                 val target = InetAddress.getByName(dnsIp)
+                socket.connect(target, 53)
                 socket.send(DatagramPacket(queryBytes, length, target, 53))
                 val recvBuf = ByteArray(2048)
                 val recvPkt = DatagramPacket(recvBuf, recvBuf.size)
                 socket.receive(recvPkt)
-                if (recvPkt.length >= 12) {
+                if (DnsPacketCodec.matchesResponse(question, recvBuf, recvPkt.length)) {
                     lastGoodUpstream = dnsIp
                     return recvBuf.copyOf(recvPkt.length)
                 }
