@@ -43,7 +43,7 @@ object ProxyConnectionDispatcher {
         var initialBuffer: ByteArray? = null
         var bytesRead = 0
         var sniffedSni: String? = null
-        if (targetPort == 443 || cleanInitialHost == null) {
+        if (targetPort == 443) {
             val initial = readInitialPacket(clientIn)
             if (initial == null || initial.second <= 0) {
                 return@withContext false
@@ -76,7 +76,10 @@ object ProxyConnectionDispatcher {
 
         fun newProtectedSocket(): Socket = Socket().also { s ->
             try { s.bind(null) } catch (_: Exception) {}
-            vpnProtect?.invoke(s)
+            if (vpnProtect?.invoke(s) == false) {
+                s.close()
+                throw IOException("VPN socket protection failed")
+            }
             s.tcpNoDelay = true
             s.soTimeout = 30000
             activeSocketRef.set(s)

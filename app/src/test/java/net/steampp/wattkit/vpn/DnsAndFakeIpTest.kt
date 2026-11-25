@@ -126,6 +126,45 @@ class DnsAndFakeIpTest {
         check(extracted.size == 1 && extracted[0].first == realIp)
     }
 
+    @Test fun dnsResponseMatchingRejectsWrongIdQuestionAndQuery() {
+        val query = DnsPacketCodec.buildQuery("example.org", transactionId = 123)
+        val question = DnsPacketCodec.parseQuestion(query)!!
+        val response = DnsPacketCodec.buildAResponse(query, query.size, question, 0x01020304)
+        check(DnsPacketCodec.matchesResponse(question, response))
+        check(!DnsPacketCodec.matchesResponse(question, response.copyOf().apply { this[1] = 7 }))
+        check(!DnsPacketCodec.matchesResponse(question, response.copyOf().apply { this[13] = 'x'.code.toByte() }))
+        check(!DnsPacketCodec.matchesResponse(question, query))
+        check(!DnsPacketCodec.matchesResponse(question, response, 12))
+    }
+
+    @Test fun wireCacheAgesTtlAndDoesNotExtendShortOrZeroTtl() {
+        var now = 1000L
+        var calls = 0
+        var ttl = 5
+        val engine = SmartDnsEngine(FakeIpPool(), { true }, { q, len, _ ->
+            calls++
+            DnsPacketCodec.buildAResponse(q, len, DnsPacketCodec.parseQuestion(q, len)!!, 0x01020304, ttl)
+        }, { now })
+        val query = DnsPacketCodec.buildQuery("example.org")
+        check(engine.handleDnsQuery(query, query.size) != null)
+        now += 3000
+        check(DnsPacketCodec.extractARecords(engine.handleDnsQuery(query, query.size)!!).single().second == 2)
+        check(calls == 1)
+        now += 2000
+        ttl = 0
+        check(engine.handleDnsQuery(query, query.size) != null)
+        check(engine.handleDnsQuery(query, query.size) != null)
+        check(calls == 3)
+    }
+
+    @Test fun tcpSendWindowHonorsRemainingBytesAndRetransmissionCapacity() {
+        check(TcpSendWindow.available(1360, 0, 0, 0, 384) == 0)
+        check(TcpSendWindow.available(1360, 1000, 900, 1, 384) == 100)
+        check(TcpSendWindow.available(1360, 1000, 1000, 1, 384) == 0)
+        check(TcpSendWindow.available(1360, 5000, 0, 384, 384) == 0)
+        check(TcpSendWindow.available(1360, 5000, 100, 1, 384) == 1360)
+    }
+
     @Test fun steamTotpOtpAuthUriParsingAndConfirmationHashWorkOnJvm() {
         val uri = "otpauth://totp/Steam:TestPlayer?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Steam"
         val acc = SteamTotp.parseOtpAuthUri(uri)

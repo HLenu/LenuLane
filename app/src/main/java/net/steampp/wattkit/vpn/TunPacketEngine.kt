@@ -12,6 +12,7 @@ import net.steampp.wattkit.proxy.ProxyConnectionDispatcher
 import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.InputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -382,7 +383,10 @@ class TunPacketEngine(
         fun start() {
             try {
                 val sock = DatagramSocket()
-                protectUdp(sock)
+                if (!protectUdp(sock)) {
+                    sock.close()
+                    return
+                }
                 sock.soTimeout = 10_000
                 socket = sock
 
@@ -562,13 +566,12 @@ class TunPacketEngine(
             }
 
             override fun write(b: ByteArray, off: Int, len: Int) {
-                if (len <= 0 || closed) return
+                if (len <= 0) return
+                if (closed) throw IOException("TUN session closed")
                 var cursor = off
                 val end = off + len
                 while (cursor < end && !closed) {
-                    val segLen = minOf(MAX_TCP_SEGMENT, end - cursor)
-                    sendDownstreamSegment(b, cursor, segLen)
-                    cursor += segLen
+                    cursor += sendDownstreamSegment(b, cursor, minOf(MAX_TCP_SEGMENT, end - cursor))
                 }
             }
 
@@ -612,7 +615,10 @@ class TunPacketEngine(
                     } else if (ok) {
                         sendFinOnce()
                     }
-                    closed = true
+                    synchronized(stateLock) {
+                        closed = true
+                        stateLock.notifyAll()
+                    }
                     clientQueue.offer(EOF_SENTINEL)
                     tcpSessions.remove(key, this@TunTcpSession)
                 }
@@ -708,8 +714,12 @@ class TunPacketEngine(
                 }
 
                 if ((flags and PacketChecksum.TCP_ACK) != 0) {
-                    hasReceivedAck = true
-                    effectiveClientWindow = scaledWindow
+                    val validAck = seqDiff(ackNum, lastAckFromClient) >= 0 && seqDiff(ackNum, serverNextSeq) <= 0
+                    if (validAck) {
+                        hasReceivedAck = true
+                        effectiveClientWindow = scaledWindow
+                        stateLock.notifyAll()
+                    }
                     if (seqDiff(ackNum, lastAckFromClient) > 0 && seqDiff(ackNum, serverNextSeq) <= 0) {
                         lastAckFromClient = ackNum
                         dupAckCount = 0
@@ -733,8 +743,6 @@ class TunPacketEngine(
                             fastRetransmitPkt = head.packet
                         }
                     }
-                } else {
-                    effectiveClientWindow = scaledWindow
                 }
 
                 if (payloadLen > 0) {
@@ -800,74 +808,40 @@ class TunPacketEngine(
             }
         }
 
-        private fun sendDownstreamSegment(buf: ByteArray, offset: Int, length: Int) {
-            val segSeq: Long
-            val ackSnap: Long
-            var timeoutRetransmit: ByteArray? = null
-            val winSize = advertisedReceiveWindow()
-
+        private fun sendDownstreamSegment(buf: ByteArray, offset: Int, requested: Int): Int {
             synchronized(stateLock) {
-                var waitedMs = 0L
-                while (!closed && waitedMs < 500L) {
-                    val maxInFlight = if (hasReceivedAck) {
-                        effectiveClientWindow.coerceAtMost(MAX_IN_FLIGHT_BYTES)
-                    } else {
-                        65535
-                    }
+                while (!closed) {
+                    val window = if (hasReceivedAck) effectiveClientWindow else 0
                     val inFlight = seqDiff(serverNextSeq, lastAckFromClient)
-                    if (maxInFlight > 0 && inFlight < maxInFlight) {
-                        break
+                    val length = TcpSendWindow.available(requested, window, inFlight,
+                        unackedSegments.size, MAX_UNACKED_SEGMENTS)
+                    if (length > 0) {
+                        val seq = serverNextSeq
+                        val endSeq = (seq + length) and 0xFFFFFFFFL
+                        val packet = PacketChecksum.buildIpv4TcpPacket(
+                            srcIp = key.dstIp, srcPort = key.dstPort,
+                            dstIp = key.srcIp, dstPort = key.srcPort,
+                            seqNum = seq, ackNum = clientNextSeq,
+                            tcpFlags = PacketChecksum.TCP_PSH or PacketChecksum.TCP_ACK,
+                            windowSize = advertisedReceiveWindow(),
+                            payload = buf, payloadOffset = offset, payloadLen = length
+                        )
+                        val now = System.currentTimeMillis()
+                        serverNextSeq = endSeq
+                        lastActivityMs = now
+                        unackedSegments.addLast(SentSegment(endSeq, packet, now))
+                        writeTunPacket(packet)
+                        return length
                     }
-                    if (maxInFlight == 0 && waitedMs >= 250L) {
-                        break
-                    }
-                    val step = 50L
                     try {
-                        stateLock.wait(step)
-                    } catch (_: InterruptedException) {
-                        return
-                    }
-                    waitedMs += step
-                    if (!closed && waitedMs >= 250L && unackedSegments.isNotEmpty()) {
-                        val head = unackedSegments.first()
-                        head.sentAtMs = System.currentTimeMillis()
-                        timeoutRetransmit = head.packet
-                        break
+                        stateLock.wait()
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw IOException("TUN sender interrupted", e)
                     }
                 }
-                if (closed) return
-                val now = System.currentTimeMillis()
-                lastActivityMs = now
-                segSeq = serverNextSeq
-                ackSnap = clientNextSeq
-                serverNextSeq = (serverNextSeq + length) and 0xFFFFFFFFL
+                throw IOException("TUN session closed")
             }
-
-            timeoutRetransmit?.let { writeTunPacket(it) }
-
-            val tcpPkt = PacketChecksum.buildIpv4TcpPacket(
-                srcIp = key.dstIp,
-                srcPort = key.dstPort,
-                dstIp = key.srcIp,
-                dstPort = key.srcPort,
-                seqNum = segSeq,
-                ackNum = ackSnap,
-                tcpFlags = PacketChecksum.TCP_PSH or PacketChecksum.TCP_ACK,
-                windowSize = winSize,
-                payload = buf,
-                payloadOffset = offset,
-                payloadLen = length
-            )
-            val sentNow = System.currentTimeMillis()
-            synchronized(stateLock) {
-                if (!closed) {
-                    while (unackedSegments.size >= MAX_UNACKED_SEGMENTS) {
-                        unackedSegments.removeFirst()
-                    }
-                    unackedSegments.addLast(SentSegment((segSeq + length) and 0xFFFFFFFFL, tcpPkt, sentNow))
-                }
-            }
-            writeTunPacket(tcpPkt)
         }
 
         private fun sendFinOnce() {

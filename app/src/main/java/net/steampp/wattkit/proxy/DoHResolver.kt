@@ -470,14 +470,17 @@ object DoHResolver {
         var socket: DatagramSocket? = null
         return try {
             socket = DatagramSocket()
-            udpProtectCallback?.invoke(socket)
+            if (udpProtectCallback?.invoke(socket) == false) return null
             socket.soTimeout = 1000
             val wireQuery = DnsPacketCodec.buildQuery(domain, DnsPacketCodec.TYPE_A, (System.nanoTime() and 0xFFFF).toInt())
             val serverAddr = InetAddress.getByName(dnsServerIp)
+            socket.connect(serverAddr, 53)
             socket.send(DatagramPacket(wireQuery, wireQuery.size, serverAddr, 53))
             val buf = ByteArray(1024)
             val respPkt = DatagramPacket(buf, buf.size)
             socket.receive(respPkt)
+            val question = DnsPacketCodec.parseQuestion(wireQuery) ?: return null
+            if (!DnsPacketCodec.matchesResponse(question, buf, respPkt.length)) return null
             val records = DnsPacketCodec.extractARecords(buf, respPkt.length)
             val validIps = mutableListOf<String>()
             var bestTtl = 60
